@@ -65,6 +65,13 @@ local thread_winid = -1
 local diff_path = ""
 local is_local_checkout = false
 
+-- Review scope: "pr", or a local scope ("branch", "uncommitted", "turn") that
+-- diffs the working tree against a git base with no PR behind it.
+local scope = "pr"
+-- Local scope details: the base as the user named it, the branch, repo root,
+-- and the argument the scope was opened with (to reload it on refresh).
+local local_info = {}
+
 -- Window options (foldmethod/signcolumn/number) saved before a local-checkout
 -- diff overrides them on the real file's window, so close_diff can restore them.
 local saved_win_opts = nil
@@ -126,6 +133,31 @@ function M.set_local_checkout(val) is_local_checkout = val end
 
 function M.get_saved_win_opts() return saved_win_opts end
 function M.set_saved_win_opts(opts) saved_win_opts = opts end
+
+function M.get_scope() return scope end
+function M.is_local_mode() return scope ~= "pr" end
+function M.get_local_info() return local_info end
+
+-- Load a local scope. info: { scope, files, base_oid, base_label, branch, root, arg, viewed }
+-- Files take the PR files' shape, so every renderer works unchanged.
+function M.set_local(info)
+  scope = info.scope
+  local_info = {
+    base_label = info.base_label,
+    branch = info.branch,
+    root = info.root,
+    arg = info.arg,
+    note = info.note,
+  }
+  changed_files = info.files
+  merge_base_oid = info.base_oid
+  base_oid = info.base_oid
+  is_local_checkout = true
+  checked_files = {}
+  for path in pairs(info.viewed or {}) do
+    checked_files[path] = true
+  end
+end
 
 -- ------- PR data loading -------
 
@@ -275,6 +307,8 @@ function M.reset()
   diff_path = ""
   is_local_checkout = false
   saved_win_opts = nil
+  scope = "pr"
+  local_info = {}
 end
 
 return M

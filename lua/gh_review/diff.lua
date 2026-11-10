@@ -453,6 +453,11 @@ local ACTIONS = {
                      "Toggle files list" } },
   goto_file    = { { "n", function() M.goto_file() end, "Go to file (checkout only)" } },
   close        = { { "n", function() M.close_diff() end, "Close diff" } },
+  send              = { { "n", function() require("gh_review").send() end, "Send comments to agent" } },
+  scope_pr          = { { "n", function() require("gh_review").set_scope("pr") end, "Scope: PR" } },
+  scope_branch      = { { "n", function() require("gh_review").set_scope("branch") end, "Scope: branch" } },
+  scope_uncommitted = { { "n", function() require("gh_review").set_scope("uncommitted") end, "Scope: uncommitted" } },
+  scope_turn        = { { "n", function() require("gh_review").set_scope("turn") end, "Scope: last turn" } },
 }
 
 local function setup_diff_buffer(bufnr, name, path, content, real_file)
@@ -570,7 +575,7 @@ local function show_diff(path, left_content, right_content)
   local right_bufnr
   if state.is_local_checkout() then
     -- path is repo-root-relative; make it absolute so :edit works from a subdirectory.
-    local root = vim.fs.root(0, ".git")
+    local root = state.get_local_info().root or vim.fs.root(0, ".git")
     local abs_path = root and (root .. "/" .. path) or path
     vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
     right_bufnr = vim.api.nvim_get_current_buf()
@@ -610,18 +615,24 @@ local function show_diff(path, left_content, right_content)
   apply_fold()
 
   -- Set winbar on both diff windows
-  local pr_num = state.get_pr_number()
   local base_short = state.get_merge_base_oid()
   if base_short == "" then base_short = state.get_base_oid() end
   base_short = base_short:sub(1, 7)
-  local head_short = state.get_head_oid():sub(1, 7)
+  local label, head_label
+  if state.is_local_mode() then
+    label = state.get_scope()
+    head_label = "working tree"
+  else
+    label = string.format("PR #%d", state.get_pr_number())
+    head_label = string.format("head (%s)", state.get_head_oid():sub(1, 7))
+  end
   local left_winid = vim.fn.bufwinid(left_bufnr)
   local right_winid = vim.fn.bufwinid(right_bufnr)
   if left_winid ~= -1 then
-    vim.wo[left_winid].winbar = string.format(" PR #%d · %s · base (%s)", pr_num, path, base_short)
+    vim.wo[left_winid].winbar = string.format(" %s · %s · base (%s)", label, path, base_short)
   end
   if right_winid ~= -1 then
-    vim.wo[right_winid].winbar = string.format(" PR #%d · %s · head (%s)", pr_num, path, head_short)
+    vim.wo[right_winid].winbar = string.format(" %s · %s · %s", label, path, head_label)
   end
 
   -- Place signs for review threads
@@ -690,9 +701,16 @@ end
 local function fetch_git_content(ref, path, callback)
   local cmd = string.format("git show %s:%s",
     vim.fn.shellescape(ref), vim.fn.shellescape(path))
-  vim.system({ "bash", "-c", cmd }, { text = true }, function(obj)
+  local local_mode = state.is_local_mode()
+  local cwd = local_mode and state.get_local_info().root or nil
+  vim.system({ "bash", "-c", cmd }, { text = true, cwd = cwd }, function(obj)
     vim.schedule(function()
       if obj.code ~= 0 then
+        -- Local scopes have no GitHub repo to ask; a missing blob is an empty side.
+        if local_mode then
+          callback({})
+          return
+        end
         -- Fall back to GraphQL blob query
         fetch_graphql_content(ref, path, callback)
         return
@@ -707,9 +725,12 @@ end
 local function fetch_contents(base_oid, head_oid, path)
   -- Determine change type for this file
   local change_type = "MODIFIED"
+  -- A renamed file's base content lives at its old path.
+  local base_path = path
   for _, f in ipairs(state.get_changed_files()) do
     if f.path == path then
       change_type = state.get(f, "changeType", "MODIFIED")
+      base_path = state.get(f, "previousPath", path)
       break
     end
   end
@@ -733,7 +754,7 @@ local function fetch_contents(base_oid, head_oid, path)
     left_content = {}
     fetches_done = fetches_done + 1
   else
-    fetch_git_content(base_oid, path, function(content)
+    fetch_git_content(base_oid, base_path, function(content)
       left_content = content
       handle_done()
     end)

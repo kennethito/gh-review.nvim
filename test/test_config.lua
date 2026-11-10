@@ -304,4 +304,31 @@ h.run_test("Folds: diffthis forces foldmethod, so foldenable is the real lever",
   config.reset()
 end)
 
+h.run_test("Config: turn options merge and validate", function()
+  config.reset()
+  h.assert_true(config.options.turn.watch)
+  h.assert_true(config.options.turn.refresh_on_end)
+
+  config.setup({ turn = { watch = false } })
+  h.assert_false(config.options.turn.watch)
+  h.assert_true(config.options.turn.refresh_on_end, "unset key keeps its default")
+
+  config.reset()
+  local messages = capture_notify(function()
+    config.setup({ turn = { watch = "yes", poll = true } })
+  end)
+  h.assert_equal(2, #messages)
+  h.assert_true(config.options.turn.watch, "an invalid call is rejected whole")
+end)
+
+h.run_test("Config: scope and send keys are on in the files list, off in the diff", function()
+  config.reset()
+  h.assert_equal("S", config.options.keymaps.files.send)
+  h.assert_equal("t", config.options.keymaps.files.scope_turn)
+  h.assert_equal(false, config.options.keymaps.diff.send)
+  config.setup({ keymaps = { diff = { send = "<leader>s" } } })
+  h.assert_equal("<leader>s", config.options.keymaps.diff.send)
+  config.reset()
+end)
+
 h.write_results("/tmp/gh_review_test_config.txt")

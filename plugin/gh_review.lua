@@ -11,9 +11,33 @@ if vim.fn.has("nvim-0.10") ~= 1 then
 end
 
 -- Commands
+local SCOPES = { "pr", "branch", "uncommitted", "turn" }
+
+local function complete_scope(arg_lead, cmd_line)
+  -- Only the first argument is a scope; later ones are a base or PR.
+  if select(2, cmd_line:gsub("%s+", "")) > 1 then return {} end
+  return vim.tbl_filter(function(s) return s:find(arg_lead, 1, true) == 1 end, SCOPES)
+end
+
 vim.api.nvim_create_user_command("GHReview", function(opts)
   require("gh_review").open(opts.args)
-end, { nargs = "?" })
+end, { nargs = "*", complete = complete_scope })
+
+vim.api.nvim_create_user_command("GHReviewScope", function(opts)
+  require("gh_review").set_scope(opts.fargs[1], opts.fargs[2])
+end, { nargs = "+", complete = complete_scope })
+
+vim.api.nvim_create_user_command("GHReviewSend", function()
+  require("gh_review").send()
+end, { nargs = 0 })
+
+vim.api.nvim_create_user_command("GHReviewCopy", function()
+  require("gh_review").copy()
+end, { nargs = 0 })
+
+vim.api.nvim_create_user_command("GHReviewTurn", function()
+  require("gh_review").mark_turn()
+end, { nargs = 0 })
 
 vim.api.nvim_create_user_command("GHReviewFiles", function()
   require("gh_review").toggle_files()

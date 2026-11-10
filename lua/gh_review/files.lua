@@ -17,16 +17,27 @@ local function change_type_to_flag(change_type)
   return "M"
 end
 
+local SCOPE_NAMES = { branch = "Branch", uncommitted = "Uncommitted", turn = "Last turn" }
+
+-- First header line: the PR, or the local scope and what it compares against.
+function M.title()
+  if not state.is_local_mode() then
+    local pr_url = string.format("https://%s/%s/%s/pull/%d",
+      state.get_host(), state.get_owner(), state.get_name(), state.get_pr_number())
+    return string.format("%s: %s", pr_url, state.get_pr_title())
+  end
+  local info = state.get_local_info()
+  return string.format("%s · %s vs %s (%s)", SCOPE_NAMES[state.get_scope()] or state.get_scope(),
+    info.branch or "", info.base_label or "", state.get_merge_base_oid():sub(1, 7))
+end
+
 local function render()
   local files = state.get_changed_files()
   local lines = {}
-  local pr_title = state.get_pr_title()
-  local pr_number = state.get_pr_number()
-  local pr_url = string.format("https://%s/%s/%s/pull/%d",
-    state.get_host(), state.get_owner(), state.get_name(), pr_number)
-  lines[#lines + 1] = string.format("%s: %s", pr_url, pr_title)
+  -- Exactly three header lines: the row-to-file mapping below relies on it.
+  lines[#lines + 1] = M.title()
   lines[#lines + 1] = string.format("Files changed (%d)", #files)
-  lines[#lines + 1] = ""
+  lines[#lines + 1] = state.get_local_info().note or ""
 
   for _, f in ipairs(files) do
     local flag = change_type_to_flag(state.get(f, "changeType", "MODIFIED"))
@@ -54,7 +65,8 @@ local function render()
   if winid ~= -1 then
     local cursor = vim.api.nvim_win_get_cursor(winid)
     local line_count = vim.api.nvim_buf_line_count(bufnr)
-    local row = math.max(4, math.min(cursor[1], line_count))
+    -- First file row, clamped to the buffer: an empty scope has only the header.
+    local row = math.min(math.max(4, cursor[1]), line_count)
     vim.api.nvim_win_set_cursor(winid, { row, cursor[2] })
   end
 end
@@ -72,6 +84,11 @@ local function toggle_checked_under_cursor()
   local checked = not state.is_file_checked(path)
   state.set_file_checked(path, checked)
   M.rerender()
+
+  if state.is_local_mode() then
+    require("gh_review.local_store").set_viewed(state.get_scope(), path, checked)
+    return
+  end
 
   local api = require("gh_review.api")
   local graphql = require("gh_review.graphql")
@@ -115,6 +132,11 @@ local ACTIONS = {
   refresh       = { { "n", refresh_and_render,          "Refresh threads" } },
   toggle_files  = { { "n", function() M.close() end,    "Close files list" } },
   close         = { { "n", function() M.close() end,    "Close files list" } },
+  send              = { { "n", function() require("gh_review").send() end, "Send comments to agent" } },
+  scope_pr          = { { "n", function() require("gh_review").set_scope("pr") end, "Scope: PR" } },
+  scope_branch      = { { "n", function() require("gh_review").set_scope("branch") end, "Scope: branch" } },
+  scope_uncommitted = { { "n", function() require("gh_review").set_scope("uncommitted") end, "Scope: uncommitted" } },
+  scope_turn        = { { "n", function() require("gh_review").set_scope("turn") end, "Scope: last turn" } },
 }
 
 local function setup_buffer()

@@ -52,6 +52,8 @@ only if you want to customize keymaps or folding.
 ```lua
 require("gh_review").setup({
   fold = { enabled = true, level = 0 },
+  -- Last-turn baseline: watch herdr agents; refresh an open turn review when a turn ends
+  turn = { watch = true, refresh_on_end = true },
   keymaps = {
     diff = {
       thread_open  = "gt",
@@ -63,6 +65,12 @@ require("gh_review").setup({
       toggle_files = "gf",
       goto_file    = "gF",
       close        = "q",
+      -- off by default: the head pane is your real file
+      send              = false,
+      scope_pr          = false,
+      scope_branch      = false,
+      scope_uncommitted = false,
+      scope_turn        = false,
     },
     files = {
       open          = "<CR>",
@@ -70,6 +78,11 @@ require("gh_review").setup({
       refresh       = "R",
       toggle_files  = "gf",
       close         = "q",
+      send              = "S",
+      scope_pr          = "p",
+      scope_branch      = "b",
+      scope_uncommitted = "u",
+      scope_turn        = "t",
     },
     thread = {
       submit       = "<C-s>",
@@ -150,6 +163,27 @@ GitHub Enterprise hosts work in both workflows: The plugin sends its API request
 
 A PR number refers to a PR in the clone’s base repo — the same repo `gh pr list` and `gh pr view` use. That’s the remote that `gh repo set-default` chose, if any; otherwise `upstream`, `github`, or `origin`, in that order. So in a clone of a fork, PR numbers refer to the parent repo’s PRs.
 
+### Local scopes (no PR)
+
+Review your own working tree, or an agent's changes, the same way: no PR and no `gh` needed.
+
+```vim
+:GHReview branch [base]   " the branch against its merge base with base (default: origin's default branch)
+:GHReview uncommitted     " the working tree against HEAD
+:GHReview turn            " what changed since a coding agent last started working
+:GHReviewScope {pr|branch|uncommitted|turn} [arg]   " switch the open review
+```
+
+- The head pane is always the real file in the working tree, so LSP works there. Untracked files are included.
+- Comments are saved per branch in `.git/gh-review/<branch>.json` (inside the git directory, never the working tree). They show as pending (`CP`) until sent, and follow their lines when the file changes (marked outdated when the lines are gone).
+- `:GHReviewSend` (or `S` in the files list, or `:GHReviewSubmit`) pastes the unsent comments into a running coding agent, unsubmitted, so you can add to it before pressing Enter. It tries, in order:
+  1. **herdr**: an agent in the same herdr workspace (one in this repo first; you pick if there are several). An agent waiting at a permission prompt is skipped, since the prompt would swallow the paste.
+  2. **[reviewr.nvim](https://github.com/paul-enz/reviewr.nvim)**, if installed: agents in Neovim terminals, tmux, Rex, or WezTerm.
+  3. The clipboard.
+- In PR scope, `:GHReviewSend` sends every unresolved thread (the whole conversation) the same way, and leaves GitHub as it is. `:GHReviewCopy` copies instead of sending.
+
+**Last turn.** Inside herdr, gh-review watches the agents in the worktree while Neovim runs and snapshots the worktree when they start working (`refs/worktree/gh-review/turn-base`); when the turn ends, an open turn review refreshes. Otherwise it uses the newest baseline left by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr) or reviewr.nvim, or one you mark yourself with `:GHReviewTurn` before prompting.
+
 ## Quick start
 
 ```
@@ -174,6 +208,10 @@ gF                      Jump to the file with LSP (checkout only)
 | `:GHReviewSubmit`  | Submit a review (Comment / Approve / Request changes)         |
 | `:GHReviewDiscard` | Discard the pending review and all its pending comments       |
 | `:GHReviewClose`   | Close all review buffers and reset state                      |
+| `:GHReviewScope`   | Switch scope: `pr`, `branch [base]`, `uncommitted`, `turn`     |
+| `:GHReviewSend`    | Send comments to a running coding agent                       |
+| `:GHReviewCopy`    | Copy the comments `:GHReviewSend` would send                  |
+| `:GHReviewTurn`    | Mark the last-turn baseline now                               |
 
 ## Files list mappings
 
@@ -181,9 +219,11 @@ gF                      Jump to the file with LSP (checkout only)
 |-----------|--------------------------------------------|
 | `<CR>`    | Open the file’s side-by-side diff          |
 | `<Space>` | Toggle the file’s reviewed state           |
-| `R`       | Refresh review threads from GitHub         |
+| `R`       | Refresh review threads from GitHub (local scopes: re-read git and comments) |
 | `gf`      | Close the files list                       |
 | `q`       | Close the files list                       |
+| `S`       | Send comments to a coding agent            |
+| `p` `b` `u` `t` | Scope: PR / branch / uncommitted / last turn |
 
 ## Diff mappings
 

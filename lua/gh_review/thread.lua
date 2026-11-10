@@ -83,11 +83,40 @@ local function get_reply_text(bufnr, reply_start)
   return table.concat(lines, "\n")
 end
 
+-- Save a comment in a local scope. It keeps the lines it covers, so the agent
+-- gets a quote even after the file moves on.
+local function submit_local_thread(body, path, line_num, start_line, side)
+  local first = (start_line and start_line ~= vim.NIL) and start_line or line_num
+  local source = side == "LEFT" and state.get_left_bufnr() or state.get_right_bufnr()
+  local anchor = {}
+  if source ~= -1 and vim.fn.bufexists(source) == 1 then
+    anchor = vim.api.nvim_buf_get_lines(source, first - 1, math.min(line_num, first + 2), false)
+  end
+  local t = require("gh_review.local_store").add_thread({
+    path = path,
+    line = line_num,
+    startLine = first ~= line_num and first or nil,
+    diffSide = side,
+    anchor = anchor,
+    anchor_total = line_num - first + 1,
+    left_base = side == "LEFT" and state.get_merge_base_oid() or nil,
+  }, body)
+  state.set_thread(t.id, t)
+  require("gh_review.diff").refresh_signs()
+  print("Comment saved")
+  M.close_thread_buffer()
+end
+
 local function submit_new_thread(body, bufnr)
   local path = vim.b[bufnr].gh_review_path or ""
   local line_num = vim.b[bufnr].gh_review_line or 0
   local start_line = vim.b[bufnr].gh_review_start_line
   local side = vim.b[bufnr].gh_review_side or "RIGHT"
+
+  if state.is_local_mode() then
+    submit_local_thread(body, path, line_num, start_line, side)
+    return
+  end
 
   local vars = {
     pullRequestId = state.get_pr_id(),
@@ -211,6 +240,16 @@ local function submit_reply()
 
   if is_new then
     submit_new_thread(body, bufnr)
+  elseif state.is_local_mode() then
+    local t = require("gh_review.local_store").reply(thread_id, body)
+    if t then
+      -- Keep the thread where re-anchoring put it, not its saved line.
+      t = require("gh_review").reanchor(state.get_local_info().root, { t })[1]
+      state.set_thread(t.id, t)
+      require("gh_review.diff").refresh_signs()
+      print("Reply saved")
+      M.close_thread_buffer()
+    end
   elseif state.is_review_active() then
     submit_review_reply(body, bufnr)
   else
@@ -228,6 +267,20 @@ local function toggle_resolve()
   end
 
   local is_resolved = vim.b[bufnr].gh_review_is_resolved or false
+
+  if state.is_local_mode() then
+    local t = require("gh_review.local_store").set_resolved(thread_id, not is_resolved)
+    if t then
+      -- Keep the thread where re-anchoring put it, not its saved line.
+      t = require("gh_review").reanchor(state.get_local_info().root, { t })[1]
+      state.set_thread(t.id, t)
+      require("gh_review.diff").refresh_signs()
+      print(is_resolved and "Thread unresolved" or "Thread resolved")
+      M.close_thread_buffer()
+    end
+    return
+  end
+
   local mutation = is_resolved and graphql.MUTATION_UNRESOLVE_THREAD or graphql.MUTATION_RESOLVE_THREAD
   local action = is_resolved and "Unresolving" or "Resolving"
 

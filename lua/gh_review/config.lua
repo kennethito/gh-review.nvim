@@ -7,7 +7,12 @@ local M = {}
 
 M.defaults = {
   fold = { enabled = true, level = 0 },
+  -- Last-turn baseline: inside herdr, watch agents and snapshot when one starts
+  -- working; refresh an open local review when its turn ends.
+  turn = { watch = true, refresh_on_end = true },
   keymaps = {
+    -- Scope and send keys are off in the diff by default: the head pane is the
+    -- real file there, where single letters and g-prefixes are already taken.
     diff = {
       thread_open  = "gt",
       comment      = "gc",
@@ -18,6 +23,11 @@ M.defaults = {
       toggle_files = "gf",
       goto_file    = "gF",
       close        = "q",
+      send              = false,
+      scope_pr          = false,
+      scope_branch      = false,
+      scope_uncommitted = false,
+      scope_turn        = false,
     },
     files = {
       open          = "<CR>",
@@ -25,6 +35,11 @@ M.defaults = {
       refresh       = "R",
       toggle_files  = "gf",
       close         = "q",
+      send              = "S",
+      scope_pr          = "p",
+      scope_branch      = "b",
+      scope_uncommitted = "u",
+      scope_turn        = "t",
     },
     thread = {
       submit       = "<C-s>",
@@ -104,6 +119,26 @@ local function validate_fold(fold)
   return ok
 end
 
+local function validate_turn(turn)
+  if turn == nil then return true end
+  if type(turn) ~= "table" then
+    warn("turn must be a table")
+    return false
+  end
+
+  local ok = true
+  for key, value in pairs(turn) do
+    if key ~= "watch" and key ~= "refresh_on_end" then
+      warn(string.format("unknown turn option %q (expected watch or refresh_on_end)", key))
+      ok = false
+    elseif type(value) ~= "boolean" then
+      warn(string.format("turn.%s must be a boolean", key))
+      ok = false
+    end
+  end
+  return ok
+end
+
 -- Accept `fold = false` as shorthand for `fold = { enabled = false }`.
 local function normalize(opts)
   opts = vim.deepcopy(opts or {})
@@ -120,12 +155,13 @@ function M.setup(opts)
 
   local ok = true
   for key in pairs(opts) do
-    if key ~= "fold" and key ~= "keymaps" then
-      warn(string.format("unknown option %q (expected fold or keymaps)", key))
+    if key ~= "fold" and key ~= "keymaps" and key ~= "turn" then
+      warn(string.format("unknown option %q (expected fold, keymaps, or turn)", key))
       ok = false
     end
   end
   if not validate_fold(opts.fold) then ok = false end
+  if not validate_turn(opts.turn) then ok = false end
   if not validate_keymaps(opts.keymaps) then ok = false end
   if not ok then return end
 

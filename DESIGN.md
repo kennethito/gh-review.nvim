@@ -92,6 +92,10 @@ lua/gh_review/
   files.lua                   Changed files list buffer
   diff.lua                    Side-by-side diff view with extmarks and virtual text
   thread.lua                  Thread/comment buffer for viewing and replying
+  local_git.lua               Git queries for local scopes: bases, snapshots, changed files
+  local_store.lua             Local-scope comments, saved per branch in the git directory
+  turn.lua                    Last-turn baseline: herdr watcher and fallback refs
+  agent.lua                   Formats comments and sends them to a coding agent
 syntax/
   gh-review-files.vim         Syntax highlighting for the files list
   gh-review-thread.vim        Syntax highlighting for the thread buffer
@@ -366,6 +370,49 @@ Closing the files list or thread buffer frees vertical space. The plugin:
 
 `:GHReviewClose` tears down everything: closes the thread buffer, diff view, and files list; wipes all `gh-review://` buffers; resets state.
 
+## Local scopes
+
+`state.scope` is `"pr"` or a local scope: `"branch"`, `"uncommitted"`, `"turn"`. `init.set_scope()`
+switches between them, and `:GHReview {scope}` opens one. A local scope fills the same state a PR does,
+so the files list, diff, signs, thread buffer, and navigation work unchanged:
+
+- `state.set_local()` sets `changed_files` (shaped like the GraphQL files, plus `previousPath` for
+  renames), `merge_base_oid` (the scope's base), and `is_local_checkout = true`, so the head pane is the
+  real file.
+- The working tree side is a tree object from `local_git.snapshot()`: `git add -A` and `write-tree`
+  into a temp copy of the index (`GIT_INDEX_FILE`). Untracked files count, and the real index is never
+  touched.
+- Threads come from `local_store` in the GitHub shape. A comment's `pullRequestReview.state` is
+  `PENDING` until sent, then `COMMENTED`, so the existing `CP`/`CT` signs mean unsent/sent. Each thread
+  also keeps `anchor` (the lines it covered) for quoting, and `left_base` for left-side comments, which
+  show only against that base.
+- `init.reanchor()` moves right-side threads with their code when the file changes (an agent's edits):
+  to the match of `anchor` nearest the saved line, or `isOutdated` when it's gone. It applies on load,
+  before sending, and after a reply or resolve; the store keeps the original positions.
+- Refresh (`R`, and a turn ending) runs `init.reload_local()`: files, threads, and signs update in
+  place, keeping an open comment draft, the diff, and the cursor. Only a moved base reopens the diff.
+
+Every function that would reach GitHub branches on `state.is_local_mode()` at its top: thread
+create/reply/resolve, the viewed toggle, start/submit/discard review, refresh. Content fetches run
+`git show` in the repo root and never fall back to the GraphQL blob query.
+
+### Agent send (`agent.lua`)
+
+`agent.message()` builds reviewr.nvim's "Code review comments from my editor:" format. `agent.send()`
+tries herdr (`herdr agent list`, then `herdr pane send-text` with a bracketed paste and
+`herdr agent focus`), then `reviewr.transport.send()` if installed, then the clipboard. External
+commands go through `agent.run()` so tests can stub them.
+
+### Last-turn baseline (`turn.lua`)
+
+Mirrors herdr-reviewr. A timer polls `herdr agent list` every second, folds the statuses of agents
+whose `cwd` resolves to this worktree (any `working` → working; all `idle`/`done` → resting; else
+hold), and on the resting → working edge commits a snapshot to `refs/worktree/gh-review/turn-base`.
+The working → resting edge refreshes an open turn review. herdr subscribes status events per pane, so
+following agents as they come and go would need resubscribing; polling keeps this simple. Without
+herdr, `turn.baseline()` takes the newest (by ref file mtime) of that ref, herdr-reviewr's, and
+reviewr.nvim's, or a `:GHReviewTurn` mark.
+
 ## Testing
 
 Tests run in headless Neovim (`nvim --clean --headless`) and use a custom `run_test()` harness that wraps each test function in `pcall()` to capture errors. Test files:
@@ -380,6 +427,9 @@ Tests run in headless Neovim (`nvim --clean --headless`) and use a custom `run_t
 | `test_navigation.lua` | Extmark placement across sides, refresh, edge cases   |
 | `test_graphql.lua`    | GraphQL constant structure validation                 |
 | `test_open.lua`       | URL/number parsing                                    |
+| `test_scopes.lua`     | Local scopes against a temp repo: file lists, real-file diff, comments, store, viewed, scope switching, send |
+| `test_agent.lua`      | Message format, herdr candidates and paste, reviewr and clipboard fallbacks |
+| `test_turn.lua`       | Status folding, turn edges, snapshots, watcher, baseline ref precedence |
 
 Headless Neovim constraints:
 - `startinsert` crashes in headless mode; tests pass body content directly to `open_new()` instead.

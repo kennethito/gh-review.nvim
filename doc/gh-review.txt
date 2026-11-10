@@ -14,6 +14,7 @@ CONTENTS                                                  *gh-review-contents*
     9. Statusline ................... |gh-review-statusline|
    10. vim.ui Integration ........... |gh-review-vim-ui|
    11. Configuration ................ |gh-review-config|
+   12. Local Scopes ................. |gh-review-scopes|
 
 ==============================================================================
 1. Introduction                                       *gh-review-introduction*
@@ -140,6 +141,31 @@ A quick-start sequence for either workflow: >
 
                                                               *:GHReviewClose*
 :GHReviewClose          Close all review buffers and reset plugin state.
+
+:GHReview branch [{base}]
+:GHReview uncommitted
+:GHReview turn          Open a local scope, with no PR.  See
+                        |gh-review-scopes|.
+
+                                                              *:GHReviewScope*
+:GHReviewScope {scope} [{arg}]
+                        Switch the open review to {scope}: `pr`, `branch`,
+                        `uncommitted`, or `turn`.  `branch` takes a base,
+                        `pr` a number or URL.  The open file stays open when
+                        the new scope has it.
+
+                                                               *:GHReviewSend*
+:GHReviewSend           Paste the comments into a running coding agent.  In
+                        a local scope: unsent comments, which are then marked
+                        sent.  In PR scope: every unresolved thread, left as
+                        it is on GitHub.  See |gh-review-agent|.
+
+                                                               *:GHReviewCopy*
+:GHReviewCopy           Copy the text |:GHReviewSend| would send.
+
+                                                               *:GHReviewTurn*
+:GHReviewTurn           Mark the last-turn baseline now: snapshot the working
+                        tree, untracked files included.
 
 ==============================================================================
 5. Diff View                                             *gh-review-diff-view*
@@ -278,7 +304,11 @@ Mappings:
 <Space>                 Toggle the reviewed state of the file under cursor.
 q                       Close the files list.
 gf                      Close the files list (same as q).
-R                       Refresh review threads from GitHub.
+R                       Refresh review threads from GitHub.  In a local
+                        scope, re-read the files from git and the comments
+                        from the store.
+S                       Send comments to a coding agent (|:GHReviewSend|).
+p b u t                 Scope: PR, branch, uncommitted, last turn.
 
 ==============================================================================
 9. Statusline                                          *gh-review-statusline*
@@ -351,6 +381,11 @@ Defaults, by surface: >lua
       toggle_files = "gf",
       goto_file    = "gF",
       close        = "q",
+      send              = false,
+      scope_pr          = false,
+      scope_branch      = false,
+      scope_uncommitted = false,
+      scope_turn        = false,
     },
     files = {
       open          = "<CR>",
@@ -358,6 +393,11 @@ Defaults, by surface: >lua
       refresh       = "R",
       toggle_files  = "gf",
       close         = "q",
+      send              = "S",
+      scope_pr          = "p",
+      scope_branch      = "b",
+      scope_uncommitted = "u",
+      scope_turn        = "t",
     },
     thread = {
       submit       = "<C-s>",
@@ -387,6 +427,55 @@ the plugin actively sets 'nofoldenable' once.  After that it leaves folding
 alone entirely, including declining to restore 'foldmethod' when another
 plugin changes it.  In the other two modes it does restore it, at whatever
 fold level you configured.
+
+TURN ~
+                                                         *gh-review-turn-opts*
+
+    turn = { watch = true, refresh_on_end = true }
+
+`watch` watches herdr agents for the last-turn baseline (|gh-review-turn|).
+`refresh_on_end` refreshes an open last-turn review when the turn ends.
+
+==============================================================================
+12. Local Scopes                                          *gh-review-scopes*
+
+A local scope reviews the working tree against a git base, with no PR and no
+`gh`.  The head (right) pane is always the real file, so LSP works there.
+Untracked files are included; the plugin snapshots the working tree through
+a private copy of the index and never touches the real one.
+
+    branch       The working tree against its merge base with {base}
+                 (default: origin's default branch, else main or master).
+    uncommitted  The working tree against HEAD.
+    turn         The working tree against the last-turn baseline.
+
+Comments are saved per branch in `<git-common-dir>/gh-review/<branch>.json`.
+Right-side comments show in every local scope; left-side ones only against
+the base they were made on.  A comment shows as pending (`CP`) until sent.
+`:GHReviewDiscard` deletes unsent comments.
+
+SENDING TO AN AGENT ~
+                                                            *gh-review-agent*
+
+|:GHReviewSend| pastes the comments, as one bracketed paste and unsubmitted,
+into the first destination that works:
+
+1. herdr: an agent in this herdr workspace other than Neovim's own pane, one
+   in this repository first.  With several, |vim.ui.select()| asks, and the
+   choice is remembered.  An agent at a permission prompt is skipped: the
+   prompt would swallow the paste.
+2. reviewr.nvim's transport, if installed: Neovim terminals, tmux, Rex,
+   WezTerm.
+3. The clipboard.
+
+LAST TURN ~
+                                                             *gh-review-turn*
+
+Inside herdr, the plugin polls `herdr agent list` while Neovim runs.  When
+the agents in this worktree go from idle to working, it snapshots the working
+tree to `refs/worktree/gh-review/turn-base`.  Without herdr, the baseline is
+the newest of that ref, herdr-reviewr's `refs/worktree/reviewr/turn-base`,
+reviewr.nvim's `refs/reviewr/<worktree>/turn`, or a |:GHReviewTurn| mark.
 
 ==============================================================================
  vim:tw=78:ts=8:ft=help:norl:
