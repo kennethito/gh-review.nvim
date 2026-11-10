@@ -7,6 +7,10 @@ local win = require("gh_review.win")
 
 local M = {}
 
+-- Each open gets a number; a content fetch that finishes after a newer open
+-- started is dropped, so quick ]s presses never show a stale file or line.
+local open_seq = 0
+
 -- Get the effective line number for a thread, falling back to originalLine
 -- for outdated threads where line is null.
 local function get_thread_line(t)
@@ -111,6 +115,7 @@ function M.refresh_signs()
   local path = state.get_diff_path()
   if path ~= "" then
     place_signs(path)
+    require("gh_review.stack.view").place_notes(path, state.get_right_bufnr())
   end
 end
 
@@ -452,6 +457,8 @@ local ACTIONS = {
   toggle_files = { { "n", function() require("gh_review.files").toggle() end,
                      "Toggle files list" } },
   goto_file    = { { "n", function() M.goto_file() end, "Go to file (checkout only)" } },
+  next_frame   = { { "n", function() require("gh_review.stack.view").step(1) end, "Next changed frame" } },
+  prev_frame   = { { "n", function() require("gh_review.stack.view").step(-1) end, "Previous changed frame" } },
   close        = { { "n", function() M.close_diff() end, "Close diff" } },
   send              = { { "n", function() require("gh_review").send() end, "Send comments to agent" } },
   scope_pr          = { { "n", function() require("gh_review").set_scope("pr") end, "Scope: PR" } },
@@ -539,7 +546,7 @@ function M.sync_highlighting(left_bufnr, right_bufnr)
   pcall(vim.treesitter.start, left_bufnr, parser:lang())
 end
 
-local function show_diff(path, left_content, right_content)
+local function show_diff(path, left_content, right_content, line, side)
   local left_name = "gh-review://LEFT/" .. path
   local right_name = "gh-review://RIGHT/" .. path
 
@@ -563,10 +570,12 @@ local function show_diff(path, left_content, right_content)
     local files_winid = fb ~= -1 and vim.fn.bufwinid(fb) or -1
     if files_winid ~= -1 then
       vim.fn.win_gotoid(files_winid)
-      vim.cmd("wincmd k")
-      -- If we didn't move, files is the only window -- split above it
+      -- The diff goes above a bottom list, or to the right of a left one.
+      local left = require("gh_review.config").options.files_position == "left"
+      vim.cmd(left and "wincmd l" or "wincmd k")
+      -- If we didn't move, files is the only window -- split next to it
       if vim.fn.win_getid() == files_winid then
-        vim.cmd("aboveleft split")
+        vim.cmd(left and "rightbelow vsplit" or "aboveleft split")
       end
     end
   end
@@ -635,11 +644,21 @@ local function show_diff(path, left_content, right_content)
     vim.wo[right_winid].winbar = string.format(" %s · %s · %s", label, path, head_label)
   end
 
-  -- Place signs for review threads
+  -- Place signs for review threads, and the stack view's notes
   place_signs(path)
+  require("gh_review.stack.view").place_notes(path, right_bufnr)
 
-  -- Position cursor in the right (head) window at the top
+  -- Position cursor in the right (head) window: at the requested line (a
+  -- stack frame), unfolded and centred, or at the top.
   vim.fn.win_gotoid(vim.fn.bufwinid(right_bufnr))
+  if line then
+    -- A removed function only exists on the base side.
+    if side == "LEFT" then vim.fn.win_gotoid(vim.fn.bufwinid(left_bufnr)) end
+    pcall(vim.api.nvim_win_set_cursor, 0, { math.min(line, vim.api.nvim_buf_line_count(0)), 0 })
+    vim.cmd("normal! zvzz")
+    -- The fold workaround below would close the fold the frame sits in.
+    return
+  end
   vim.cmd("normal! gg")
 
   -- Workaround: Neovim fails to render syntax concealing when
@@ -722,7 +741,7 @@ local function fetch_git_content(ref, path, callback)
   end)
 end
 
-local function fetch_contents(base_oid, head_oid, path)
+local function fetch_contents(base_oid, head_oid, path, line, seq, side)
   -- Determine change type for this file
   local change_type = "MODIFIED"
   -- A renamed file's base content lives at its old path.
@@ -744,7 +763,7 @@ local function fetch_contents(base_oid, head_oid, path)
     fetches_done = fetches_done + 1
     if fetches_done >= total_fetches then
       vim.schedule(function()
-        show_diff(path, left_content, right_content)
+        if seq == open_seq then show_diff(path, left_content, right_content, line, side) end
       end)
     end
   end
@@ -773,12 +792,15 @@ local function fetch_contents(base_oid, head_oid, path)
   -- Check if both were synchronous (ADDED/DELETED)
   if fetches_done >= total_fetches then
     vim.schedule(function()
-      show_diff(path, left_content, right_content)
+      if seq == open_seq then show_diff(path, left_content, right_content, line, side) end
     end)
   end
 end
 
-function M.open(path)
+-- opts.line: put the cursor on this line once the diff is shown, in the head
+-- pane, or the base pane with opts.side = "LEFT".
+function M.open(path, opts)
+  open_seq = open_seq + 1
   state.set_diff_path(path)
 
   local base_oid = state.get_merge_base_oid()
@@ -787,7 +809,7 @@ function M.open(path)
   end
   local head_oid = state.get_head_oid()
 
-  fetch_contents(base_oid, head_oid, path)
+  fetch_contents(base_oid, head_oid, path, opts and opts.line or nil, open_seq, opts and opts.side or nil)
 end
 
 function M.goto_file()
@@ -816,6 +838,27 @@ function M.goto_file()
   vim.api.nvim_win_set_cursor(0, { lnum, 0 })
 end
 
+-- Open a file that is not part of the change, at a line, in the diff area:
+-- a function on a call path into the change, where a diff would show nothing.
+function M.open_plain(path, line)
+  if state.get_left_bufnr() ~= -1 then M.close_diff() end
+  open_seq = open_seq + 1
+  local fb = state.get_files_bufnr()
+  local files_winid = fb ~= -1 and vim.fn.bufwinid(fb) or -1
+  if files_winid ~= -1 then
+    vim.fn.win_gotoid(files_winid)
+    local left = config.options.files_position == "left"
+    vim.cmd(left and "wincmd l" or "wincmd k")
+    if vim.fn.win_getid() == files_winid then
+      vim.cmd(left and "rightbelow vsplit" or "aboveleft split")
+    end
+  end
+  local root = state.get_local_info().root or vim.fs.root(0, ".git") or vim.fn.getcwd()
+  vim.cmd("edit " .. vim.fn.fnameescape(root .. "/" .. path))
+  pcall(vim.api.nvim_win_set_cursor, 0, { math.min(line or 1, vim.api.nvim_buf_line_count(0)), 0 })
+  vim.cmd("normal! zvzz")
+end
+
 function M.close_diff()
   local left = state.get_left_bufnr()
   local right = state.get_right_bufnr()
@@ -826,6 +869,11 @@ function M.close_diff()
   end
   if right ~= -1 and vim.fn.bufexists(right) == 1 then
     vim.b[right].gh_review_diff = false
+  end
+
+  -- The head is often a real file that stays open: drop the stack notes.
+  if right ~= -1 and vim.fn.bufexists(right) == 1 then
+    vim.api.nvim_buf_clear_namespace(right, require("gh_review.stack.view").ns, 0, -1)
   end
 
   -- Close the left diff window
@@ -876,5 +924,9 @@ function M.close_diff()
     vim.fn.win_gotoid(files_winid)
   end
 end
+
+
+-- For the `?` help, which lists what each surface maps.
+M.ACTIONS = ACTIONS
 
 return M

@@ -54,6 +54,16 @@ require("gh_review").setup({
   fold = { enabled = true, level = 0 },
   -- Last-turn baseline: watch herdr agents; refresh an open turn review when a turn ends
   turn = { watch = true, refresh_on_end = true },
+  stack = {
+    notes = true,            -- stack marks as virtual text in the diff
+    data_edges = true,       -- ◆ keys passed between changed functions
+    tests = false,           -- walk callers in test files too
+    max_depth = 12,
+    max_frames = 400,
+    max_context_hops = 3,    -- unchanged functions climbed above changed code
+  },
+  files_position = "bottom", -- or "left"
+  files_size = { bottom = 12, left = 50 },
   keymaps = {
     diff = {
       thread_open  = "gt",
@@ -71,6 +81,8 @@ require("gh_review").setup({
       scope_branch      = false,
       scope_uncommitted = false,
       scope_turn        = false,
+      next_frame        = "]s",
+      prev_frame        = "[s",
     },
     files = {
       open          = "<CR>",
@@ -83,6 +95,10 @@ require("gh_review").setup({
       scope_branch      = "b",
       scope_uncommitted = "u",
       scope_turn        = "t",
+      toggle_stack      = "s",
+      toggle_fold       = "<Tab>",
+      toggle_position   = "P",
+      help              = "?",
     },
     thread = {
       submit       = "<C-s>",
@@ -184,6 +200,26 @@ Review your own working tree, or an agent's changes, the same way: no PR and no 
 
 **Last turn.** Inside herdr, gh-review watches the agents in the worktree while Neovim runs and snapshots the worktree when they start working (`refs/worktree/gh-review/turn-base`); when the turn ends, an open turn review refreshes. Otherwise it uses the newest baseline left by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr) or reviewr.nvim, or one you mark yourself with `:GHReviewTurn` before prompting.
 
+### Stack view
+
+Press `s` in the files list to see the change as call stacks instead of files: one stack per entry point (a cron worker, a GenServer callback, a controller), from the entry down to the changed functions, with the unchanged functions on the way shown dimmed. It is built from the diff and the code itself, in the background.
+
+```
+▾ Chronos.Minute.Worker.CBB.handle_info/2  (+4 more entries)  worker_cbb.ex:44
+  ~ Data.Action.GameStatus.Runner.run/1  runner.ex:20
+    ⇢ Data.Action.GameStatus.Runner.process_game/1  runner.ex:40
+      + Data.Action.GameStatus.Runner.notification_score/1  runner.ex:65
+```
+
+- `+` new, `~` changed, `-` removed; `⇢` a call made asynchronously (`:timer.apply_after`, `apply/3`, `{Module, :fun, args}` tuples such as RPC casts and scheduled jobs).
+- Entry points that converge on the same code fold into one line (`+4 more entries`). A function reached twice is drawn once; later rows say `↪ … (see above)`.
+- `⚠ N`: an entry point outside the change also reaches this function: existing callers of code the change modified. Only the frame where they cross in is marked.
+- `◆ key`: a string key written by one changed function and read by another, in another file (heuristic, from added lines only).
+- `<CR>` opens any function: changed code (and anything else in a changed file) as a diff at the function, a removed function on the base side, and a function in an unchanged file as the plain file at that line; `]s` / `[s` in the diff step through the changed functions in stack order; `<Tab>` folds an entry group; the diff shows the same marks as virtual text.
+- `P` moves the files list between the bottom and the left.
+
+The view needs the working tree to be the reviewed head: local scopes, or a PR opened with a checkout. Elixir is supported (needs the `elixir` tree-sitter parser). Lua support is basic: it follows `require`d modules and the file's returned table, but not functions passed around in tables (keymaps, callbacks), so callback-heavy Lua shows many entry points. Other files are listed under "Other changed files". Callers in test files are left out unless `stack.tests = true`, and the climb above changed code stops after `stack.max_context_hops` unchanged functions, so widely used helpers don't drag in the whole codebase.
+
 ## Quick start
 
 ```
@@ -224,6 +260,10 @@ gF                      Jump to the file with LSP (checkout only)
 | `q`       | Close the files list                       |
 | `S`       | Send comments to a coding agent            |
 | `p` `b` `u` `t` | Scope: PR / branch / uncommitted / last turn |
+| `s`       | Toggle the stack view                      |
+| `<Tab>`   | Fold or unfold an entry group (stack view) |
+| `P`       | Move the list between the bottom and the left |
+| `?`       | Show every key (files list, diff, comment buffer) and command |
 
 ## Diff mappings
 

@@ -10,6 +10,18 @@ M.defaults = {
   -- Last-turn baseline: inside herdr, watch agents and snapshot when one starts
   -- working; refresh an open local review when its turn ends.
   turn = { watch = true, refresh_on_end = true },
+  -- Stack view: call stacks from entry points down to the changed functions.
+  stack = {
+    notes = true,           -- virtual text on changed functions in the diff
+    data_edges = true,      -- ◆ string keys written by one changed function, read by another
+    tests = false,          -- walk callers in test files too
+    max_depth = 12,
+    max_frames = 400,
+    max_context_hops = 3,   -- unchanged frames climbed above changed code
+  },
+  -- Where the files list sits, and its height (bottom) or width (left).
+  files_position = "bottom",
+  files_size = { bottom = 12, left = 50 },
   keymaps = {
     -- Scope and send keys are off in the diff by default: the head pane is the
     -- real file there, where single letters and g-prefixes are already taken.
@@ -28,6 +40,8 @@ M.defaults = {
       scope_branch      = false,
       scope_uncommitted = false,
       scope_turn        = false,
+      next_frame        = "]s",
+      prev_frame        = "[s",
     },
     files = {
       open          = "<CR>",
@@ -40,6 +54,10 @@ M.defaults = {
       scope_branch      = "b",
       scope_uncommitted = "u",
       scope_turn        = "t",
+      toggle_stack      = "s",
+      toggle_fold       = "<Tab>",
+      toggle_position   = "P",
+      help              = "?",
     },
     thread = {
       submit       = "<C-s>",
@@ -139,6 +157,52 @@ local function validate_turn(turn)
   return ok
 end
 
+local STACK_TYPES = {
+  notes = "boolean", data_edges = "boolean", tests = "boolean",
+  max_depth = "number", max_frames = "number", max_context_hops = "number",
+}
+
+local function validate_stack(stack)
+  if stack == nil then return true end
+  if type(stack) ~= "table" then
+    warn("stack must be a table")
+    return false
+  end
+  local ok = true
+  for key, value in pairs(stack) do
+    if STACK_TYPES[key] == nil then
+      warn(string.format("unknown stack option %q", key))
+      ok = false
+    elseif type(value) ~= STACK_TYPES[key] then
+      warn(string.format("stack.%s must be a %s", key, STACK_TYPES[key]))
+      ok = false
+    end
+  end
+  return ok
+end
+
+local function validate_files(opts)
+  local ok = true
+  if opts.files_position ~= nil and opts.files_position ~= "bottom" and opts.files_position ~= "left" then
+    warn('files_position must be "bottom" or "left"')
+    ok = false
+  end
+  if opts.files_size ~= nil then
+    if type(opts.files_size) ~= "table" then
+      warn("files_size must be a table")
+      ok = false
+    else
+      for key, value in pairs(opts.files_size) do
+        if (key ~= "bottom" and key ~= "left") or type(value) ~= "number" then
+          warn("files_size takes numbers for bottom and left")
+          ok = false
+        end
+      end
+    end
+  end
+  return ok
+end
+
 -- Accept `fold = false` as shorthand for `fold = { enabled = false }`.
 local function normalize(opts)
   opts = vim.deepcopy(opts or {})
@@ -155,11 +219,14 @@ function M.setup(opts)
 
   local ok = true
   for key in pairs(opts) do
-    if key ~= "fold" and key ~= "keymaps" and key ~= "turn" then
-      warn(string.format("unknown option %q (expected fold, keymaps, or turn)", key))
+    if key ~= "fold" and key ~= "keymaps" and key ~= "turn" and key ~= "stack"
+      and key ~= "files_position" and key ~= "files_size" then
+      warn(string.format("unknown option %q (expected fold, keymaps, turn, stack, files_position, or files_size)", key))
       ok = false
     end
   end
+  if not validate_stack(opts.stack) then ok = false end
+  if not validate_files(opts) then ok = false end
   if not validate_fold(opts.fold) then ok = false end
   if not validate_turn(opts.turn) then ok = false end
   if not validate_keymaps(opts.keymaps) then ok = false end

@@ -7,6 +7,14 @@ local win = require("gh_review.win")
 local M = {}
 
 local BUF_NAME = "gh-review://files"
+local ns = vim.api.nvim_create_namespace("gh_review_files")
+
+-- "files" lists the changed files; "stack" shows the call stacks into them.
+local mode = "files"
+-- What each buffer line stands for: { kind = "file", path } or a stack item.
+local items = {}
+
+function M.mode() return mode end
 
 local function change_type_to_flag(change_type)
   if change_type == "ADDED" then return "A"
@@ -31,11 +39,9 @@ function M.title()
     info.branch or "", info.base_label or "", state.get_merge_base_oid():sub(1, 7))
 end
 
-local function render()
+local function file_lines()
   local files = state.get_changed_files()
-  local lines = {}
-  -- Exactly three header lines: the row-to-file mapping below relies on it.
-  lines[#lines + 1] = M.title()
+  local lines, line_items = {}, {}
   lines[#lines + 1] = string.format("Files changed (%d)", #files)
   lines[#lines + 1] = state.get_local_info().note or ""
 
@@ -54,12 +60,86 @@ local function render()
 
     local checkbox = state.is_file_checked(path) and "[x]" or "[ ]"
     lines[#lines + 1] = string.format("%s +%-4d -%-4d %s  %s%s", checkbox, additions, deletions, flag, path, thread_info)
+    line_items[#lines] = { kind = "file", path = path }
+  end
+  return lines, line_items, {}
+end
+
+-- "? help · s stack view", from the configured keys; disabled keys are left out.
+function M.key_hint()
+  local keys = config.options.keymaps.files
+  local parts = {}
+  if type(keys.help) == "string" then parts[#parts + 1] = keys.help .. " help" end
+  if type(keys.toggle_stack) == "string" then
+    parts[#parts + 1] = keys.toggle_stack .. (mode == "stack" and " file list" or " stack view")
+  end
+  return table.concat(parts, " · ")
+end
+
+local function render()
+  local view = require("gh_review.stack.view")
+  local body, body_items, hls
+  if mode == "stack" then
+    body, body_items, hls = view.render()
+  else
+    body, body_items, hls = file_lines()
+  end
+  -- Line one is always the title; the body brings its own two header lines.
+  local lines = { M.title() }
+  items = {}
+  for i, text in ipairs(body) do
+    lines[#lines + 1] = text
+    items[#lines] = body_items[i]
+  end
+  -- Point at the help from the second header line, where it costs no space.
+  local hint = M.key_hint()
+  local hint_col = nil
+  if hint ~= "" and lines[2] then
+    hint_col = #lines[2] + 3
+    lines[2] = lines[2] .. "   " .. hint
   end
 
   local bufnr = state.get_files_bufnr()
   vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
+  -- The files syntax would misread stack rows; they are highlighted by extmarks.
+  vim.bo[bufnr].syntax = mode == "stack" and "" or "gh-review-files"
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  if hint_col then
+    vim.api.nvim_buf_set_extmark(bufnr, ns, 1, hint_col, { end_col = #lines[2], hl_group = "Comment" })
+  end
+  local winid_for_folds = vim.fn.bufwinid(bufnr)
+  if winid_for_folds ~= -1 then
+    vim.api.nvim_win_call(winid_for_folds, function()
+      vim.wo.foldmethod = "manual"
+      vim.cmd("silent! normal! zE")
+      if mode == "stack" then
+        -- One fold per entry group, from its header to the line before the next.
+        local starts = {}
+        for lnum = 1, #lines do
+          local item = items[lnum]
+          if item and item.row and (item.row.kind == "group" or item.row.kind == "section") then
+            starts[#starts + 1] = lnum
+          end
+        end
+        for i, first in ipairs(starts) do
+          local last = (starts[i + 1] or (#lines + 1)) - 1
+          if last > first and items[first].row.kind == "group" then
+            vim.cmd(string.format("silent! %d,%dfold", first, last))
+          end
+        end
+        vim.wo.foldenable = true
+        vim.cmd("silent! normal! zR")
+      end
+    end)
+  end
+  for _, hl in ipairs(hls) do
+    local row, col_start, col_end, group = hl[1] + 1, hl[2], hl[3], hl[4]
+    local text = lines[row + 1] or ""
+    vim.api.nvim_buf_set_extmark(bufnr, ns, row, col_start,
+      { end_col = col_end == -1 and #text or math.min(col_end, #text), hl_group = group })
+  end
 
   local winid = vim.fn.bufwinid(bufnr)
   if winid ~= -1 then
@@ -72,12 +152,9 @@ local function render()
 end
 
 local function toggle_checked_under_cursor()
-  local lnum = vim.fn.line(".")
-  if lnum <= 3 then return end
-  local file_idx = lnum - 3
-  local files = state.get_changed_files()
-  if file_idx < 1 or file_idx > #files then return end
-  local path = files[file_idx].path
+  local item = items[vim.fn.line(".")]
+  if not item or item.kind ~= "file" then return end
+  local path = item.path
 
   -- Optimistically flip locally (M.rerender keeps the cursor in place), then
   -- sync the "Viewed" state to GitHub.
@@ -109,14 +186,72 @@ local function toggle_checked_under_cursor()
 end
 
 local function open_file_under_cursor()
-  local lnum = vim.fn.line(".")
-  -- First 3 lines are header
-  if lnum <= 3 then return end
-  local file_idx = lnum - 3 -- 1-indexed: line 4 = file 1
-  local files = state.get_changed_files()
-  if file_idx < 1 or file_idx > #files then return end
-  local path = files[file_idx].path
-  require("gh_review.diff").open(path)
+  local item = items[vim.fn.line(".")]
+  if not item then return end
+  if item.kind == "file" then
+    require("gh_review.diff").open(item.path)
+    return
+  end
+  -- A stack row: a "see above" reference jumps to the expanded frame.
+  if item.target then
+    -- Targets count the view's own lines; the title line sits above them.
+    vim.api.nvim_win_set_cursor(0, { item.target + 1, 0 })
+    return
+  end
+  local row = item.row
+  local node = row and row.node
+  if row and row.kind == "file" then
+    require("gh_review.diff").open(row.file.path)
+  elseif row and row.kind == "hunk" then
+    require("gh_review.diff").open(row.hunk.path, { line = row.hunk.line })
+  elseif node then
+    local diff = require("gh_review.diff")
+    if node.status == "deleted" then
+      diff.open(node.path, { line = node.line, side = "LEFT" })
+    elseif M.in_change(node.path) then
+      diff.open(node.path, { line = node.jump_line or node.line })
+    else
+      diff.open_plain(node.path, node.line)
+    end
+  end
+end
+
+function M.in_change(path)
+  for _, f in ipairs(state.get_changed_files()) do
+    if f.path == path then return true end
+  end
+  return false
+end
+
+-- Switch between the file list and the stack view.
+function M.toggle_stack()
+  mode = mode == "stack" and "files" or "stack"
+  if mode == "stack" then
+    local view = require("gh_review.stack.view")
+    if not view.unavailable() then view.ensure(function() M.rerender() end) end
+  end
+  M.rerender()
+  local winid = vim.fn.bufwinid(state.get_files_bufnr())
+  if winid ~= -1 then
+    local first = 4
+    for lnum = 4, vim.api.nvim_buf_line_count(state.get_files_bufnr()) do
+      if items[lnum] then first = lnum break end
+    end
+    pcall(vim.api.nvim_win_set_cursor, winid, { first, 0 })
+  end
+end
+
+-- Move the list between the bottom and the left, keeping mode and cursor.
+function M.toggle_position()
+  local options = config.options
+  options.files_position = options.files_position == "left" and "bottom" or "left"
+  local bufnr = state.get_files_bufnr()
+  local winid = bufnr ~= -1 and vim.fn.bufwinid(bufnr) or -1
+  local cursor = winid ~= -1 and vim.api.nvim_win_get_cursor(winid) or nil
+  M.close()
+  M.open()
+  winid = vim.fn.bufwinid(state.get_files_bufnr())
+  if cursor and winid ~= -1 then pcall(vim.api.nvim_win_set_cursor, winid, cursor) end
 end
 
 local function refresh_and_render()
@@ -137,7 +272,14 @@ local ACTIONS = {
   scope_branch      = { { "n", function() require("gh_review").set_scope("branch") end, "Scope: branch" } },
   scope_uncommitted = { { "n", function() require("gh_review").set_scope("uncommitted") end, "Scope: uncommitted" } },
   scope_turn        = { { "n", function() require("gh_review").set_scope("turn") end, "Scope: last turn" } },
+  toggle_stack      = { { "n", function() M.toggle_stack() end, "Toggle stack view" } },
+  toggle_fold       = { { "n", function() vim.cmd("silent! normal! za") end, "Fold or unfold an entry group" } },
+  toggle_position   = { { "n", function() M.toggle_position() end, "Move list left/bottom" } },
+  help              = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },
 }
+
+-- For the `?` help, which lists what each surface maps.
+M.ACTIONS = ACTIONS
 
 local function setup_buffer()
   local bufnr = state.get_files_bufnr()
@@ -153,7 +295,9 @@ local function setup_buffer()
     vim.wo[winid].relativenumber = false
     vim.wo[winid].signcolumn = "no"
     vim.wo[winid].list = false
-    vim.wo[winid].winfixheight = true
+    local left = config.options.files_position == "left"
+    vim.wo[winid].winfixheight = not left
+    vim.wo[winid].winfixwidth = left
   end
 
   vim.bo[bufnr].filetype = "gh-review-files"
@@ -174,11 +318,17 @@ function M.open()
     end
   end
 
-  -- Create a new split at the bottom. :split rather than :new, because
-  -- :new would open a throwaway empty buffer that is orphaned the moment
-  -- the window is pointed at the files buffer below.
-  vim.cmd("botright split")
-  vim.cmd("resize 12")
+  -- Create a new split at the bottom or on the left. :split rather than :new,
+  -- because :new would open a throwaway empty buffer that is orphaned the
+  -- moment the window is pointed at the files buffer below.
+  local size = config.options.files_size
+  if config.options.files_position == "left" then
+    vim.cmd("topleft vsplit")
+    vim.cmd("vertical resize " .. size.left)
+  else
+    vim.cmd("botright split")
+    vim.cmd("resize " .. size.bottom)
+  end
   local new_bufnr = vim.fn.bufnr(BUF_NAME, true)
   vim.cmd("buffer " .. new_bufnr)
   state.set_files_bufnr(new_bufnr)
@@ -217,6 +367,12 @@ function M.toggle()
   else
     M.open()
   end
+end
+
+-- A new review starts in the file list.
+function M.reset_mode()
+  mode = "files"
+  items = {}
 end
 
 function M.rerender()

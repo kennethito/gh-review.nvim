@@ -557,4 +557,8 @@ function M.close_thread_buffer()
   end
 end
 
+
+-- For the `?` help, which lists what each surface maps.
+M.ACTIONS = ACTIONS
+
 return M

@@ -48,7 +48,7 @@ end)
 h.run_test("Files list header names the scope and base", function()
   local lines = vim.api.nvim_buf_get_lines(state.get_files_bufnr(), 0, 3, false)
   h.assert_match("^Branch · feature vs main %(%x+%)$", lines[1])
-  h.assert_equal("Files changed (4)", lines[2])
+  h.assert_equal("Files changed (4)   ? help · s stack view", lines[2])
 end)
 
 h.run_test("Snapshots leave the real index untouched", function()

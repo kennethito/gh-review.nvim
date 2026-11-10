@@ -246,6 +246,7 @@ end
 -- which only happens when no comment is being written.
 function M.reload_local()
   if not state.is_local_mode() then return end
+  require("gh_review.stack.view").invalidate()
   local scope, info = state.get_scope(), state.get_local_info()
   local old_base = state.get_merge_base_oid()
   local files_bufnr, left, right = state.get_files_bufnr(), state.get_left_bufnr(), state.get_right_bufnr()
@@ -269,6 +270,10 @@ function M.reload_local()
     pcall(vim.cmd, "checktime " .. right)
   end
   diff.refresh_signs()
+  if files.mode() == "stack" then
+    local view = require("gh_review.stack.view")
+    if not view.unavailable() then view.ensure(function() files.rerender() end) end
+  end
   files.rerender()
 end
 
@@ -289,6 +294,7 @@ function M.set_scope(scope, arg)
     return
   end
 
+  require("gh_review.stack.view").invalidate()
   local open_path = state.get_diff_path()
   if scope == "branch" then
     if arg == nil or arg == "" then
@@ -312,6 +318,11 @@ function M.set_scope(scope, arg)
     return
   end
   files.open()
+  if files.mode() == "stack" then
+    -- Rebuild for the new scope; the view redraws as the build progresses.
+    local view = require("gh_review.stack.view")
+    if not view.unavailable() then view.ensure(function() files.rerender() end) end
+  end
   for _, f in ipairs(state.get_changed_files()) do
     if f.path == open_path then
       diff.open(open_path)
@@ -763,6 +774,8 @@ function M.close_silently()
 
   state.reset()
   local_store.reset()
+  files.reset_mode()
+  require("gh_review.stack.view").invalidate()
 end
 
 return M

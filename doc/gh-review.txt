@@ -15,6 +15,7 @@ CONTENTS                                                  *gh-review-contents*
    10. vim.ui Integration ........... |gh-review-vim-ui|
    11. Configuration ................ |gh-review-config|
    12. Local Scopes ................. |gh-review-scopes|
+   13. Stack View ................... |gh-review-stack|
 
 ==============================================================================
 1. Introduction                                       *gh-review-introduction*
@@ -309,6 +310,12 @@ R                       Refresh review threads from GitHub.  In a local
                         from the store.
 S                       Send comments to a coding agent (|:GHReviewSend|).
 p b u t                 Scope: PR, branch, uncommitted, last turn.
+s                       Toggle the stack view (|gh-review-stack|).
+<Tab>                   Fold or unfold an entry group in the stack view.
+P                       Move the list between the bottom and the left.
+?                       Show every key (files list, diff, comment buffer)
+                        and command, as configured, in a float.  q, <Esc>,
+                        or ? closes it.
 
 ==============================================================================
 9. Statusline                                          *gh-review-statusline*
@@ -386,6 +393,8 @@ Defaults, by surface: >lua
       scope_branch      = false,
       scope_uncommitted = false,
       scope_turn        = false,
+      next_frame        = "]s",
+      prev_frame        = "[s",
     },
     files = {
       open          = "<CR>",
@@ -398,6 +407,10 @@ Defaults, by surface: >lua
       scope_branch      = "b",
       scope_uncommitted = "u",
       scope_turn        = "t",
+      toggle_stack      = "s",
+      toggle_fold       = "<Tab>",
+      toggle_position   = "P",
+      help              = "?",
     },
     thread = {
       submit       = "<C-s>",
@@ -435,6 +448,20 @@ TURN ~
 
 `watch` watches herdr agents for the last-turn baseline (|gh-review-turn|).
 `refresh_on_end` refreshes an open last-turn review when the turn ends.
+
+STACK AND LAYOUT ~
+                                                        *gh-review-stack-opts*
+
+    stack = {
+      notes = true,            stack marks as virtual text in the diff
+      data_edges = true,       ◆ keys passed between changed functions
+      tests = false,           walk callers in test files too
+      max_depth = 12,          caller levels walked
+      max_frames = 400,        functions visited before giving up
+      max_context_hops = 3,    unchanged functions climbed above changes
+    },
+    files_position = "bottom", or "left"
+    files_size = { bottom = 12, left = 50 },
 
 ==============================================================================
 12. Local Scopes                                          *gh-review-scopes*
@@ -476,6 +503,50 @@ the agents in this worktree go from idle to working, it snapshots the working
 tree to `refs/worktree/gh-review/turn-base`.  Without herdr, the baseline is
 the newest of that ref, herdr-reviewr's `refs/worktree/reviewr/turn-base`,
 reviewr.nvim's `refs/reviewr/<worktree>/turn`, or a |:GHReviewTurn| mark.
+
+==============================================================================
+13. Stack View                                             *gh-review-stack*
+
+`s` in the files list shows the change as call stacks: one per entry point,
+from the entry down to the changed functions, built from the diff and the
+code in the background.  Rows read: >
+
+    ▾ Chronos.Minute.Worker.CBB.handle_info/2  (+4 more entries)
+      ~ Data.Action.GameStatus.Runner.run/1  runner.ex:20
+        ⇢ Data.Action.GameStatus.Runner.process_game/1  runner.ex:40
+<
+    +  new function           ~  changed           -  removed
+    ⇢  called asynchronously: :timer.apply_after, apply/3, or a
+       {Module, :fun, args} tuple (RPC casts, scheduled jobs)
+    ↪  drawn above; <CR> jumps there
+    ⚠  N other entry points reach this function: existing callers of
+       code the change modified (only the frame where they cross in)
+    ◆  a string key written by one changed function and read by
+       another in another file (heuristic, added lines only)
+
+Entry points whose call chains converge on the same function fold into one
+line.  The largest groups form the change itself; smaller ones that mostly
+reach the same code are listed under "Other entry points into changed code".
+
+<CR> opens any function: one in a changed file as a diff at the function, a
+removed one on the base side of its diff, and one in an unchanged file (a
+caller on the way to the change) as the plain file at that line.  In the diff, `]s` and `[s` step
+through the changed functions in stack order, and the same marks show as
+virtual text (|gh-review-stack-opts| `notes`).
+
+How it is built: changed functions come from parsing each changed file at
+its base and head and comparing each function's own text.  Callers are
+found with `rg` (files containing both the function name and the last
+segment of its module), parsed with tree-sitter, and matched by module,
+name, and arity, following aliases, imports, pipes, and captures.  The climb
+stops at functions nobody calls, after `max_context_hops` unchanged
+functions, or at the depth and frame limits ("↑ more callers").
+
+Needs the head checked out (local scopes, or a PR with a checkout).
+Languages: Elixir (the `elixir` tree-sitter parser), and basic Lua: required
+modules and the file's returned table, but not functions passed through
+tables (keymaps, callbacks).  Files in other languages are listed under
+"Other changed files".
 
 ==============================================================================
  vim:tw=78:ts=8:ft=help:norl:

@@ -21,49 +21,59 @@ end
 
 vim.api.nvim_create_user_command("GHReview", function(opts)
   require("gh_review").open(opts.args)
-end, { nargs = "*", complete = complete_scope })
+end, { nargs = "*", complete = complete_scope, desc = "Open a review: [PR number|url] or branch [base] | uncommitted | turn" })
 
 vim.api.nvim_create_user_command("GHReviewScope", function(opts)
   require("gh_review").set_scope(opts.fargs[1], opts.fargs[2])
-end, { nargs = "+", complete = complete_scope })
+end, { nargs = "+", complete = complete_scope, desc = "Switch scope: pr | branch [base] | uncommitted | turn" })
 
 vim.api.nvim_create_user_command("GHReviewSend", function()
   require("gh_review").send()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Send comments to a running coding agent" })
 
 vim.api.nvim_create_user_command("GHReviewCopy", function()
   require("gh_review").copy()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Copy the comments :GHReviewSend would send" })
 
 vim.api.nvim_create_user_command("GHReviewTurn", function()
   require("gh_review").mark_turn()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Mark the last-turn baseline now" })
 
 vim.api.nvim_create_user_command("GHReviewFiles", function()
   require("gh_review").toggle_files()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Toggle the files list" })
 
 vim.api.nvim_create_user_command("GHReviewStart", function()
   require("gh_review").start_review()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Start a pending review (PR)" })
 
 vim.api.nvim_create_user_command("GHReviewSubmit", function()
   require("gh_review").submit_review()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Submit the review (PR) or send to the agent (local scopes)" })
 
 vim.api.nvim_create_user_command("GHReviewDiscard", function()
   require("gh_review").discard_review()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Discard the pending review, or unsent local comments" })
 
 vim.api.nvim_create_user_command("GHReviewClose", function()
   require("gh_review").close()
-end, { nargs = 0 })
+end, { nargs = 0, desc = "Close the review" })
 
 -- Highlight groups
 vim.api.nvim_set_hl(0, "GHReviewThread", { default = true, ctermfg = "Blue", fg = "#58a6ff" })
 vim.api.nvim_set_hl(0, "GHReviewThreadResolved", { default = true, ctermfg = "Green", fg = "#3fb950" })
 vim.api.nvim_set_hl(0, "GHReviewThreadPending", { default = true, ctermfg = "Yellow", fg = "#d29922" })
 vim.api.nvim_set_hl(0, "GHReviewVirtText", { default = true, ctermfg = "Gray", fg = "#8b949e", italic = true })
+-- Stack view
+vim.api.nvim_set_hl(0, "GHReviewStackNew", { default = true, ctermfg = "Green", fg = "#3fb950" })
+vim.api.nvim_set_hl(0, "GHReviewStackChanged", { default = true, ctermfg = "Yellow", fg = "#d29922" })
+vim.api.nvim_set_hl(0, "GHReviewStackDeleted", { default = true, ctermfg = "Red", fg = "#f85149" })
+vim.api.nvim_set_hl(0, "GHReviewStackContext", { default = true, link = "Comment" })
+vim.api.nvim_set_hl(0, "GHReviewStackEntry", { default = true, bold = true })
+vim.api.nvim_set_hl(0, "GHReviewStackSection", { default = true, link = "Title" })
+vim.api.nvim_set_hl(0, "GHReviewStackDynamic", { default = true, ctermfg = "Cyan", fg = "#39c5cf" })
+vim.api.nvim_set_hl(0, "GHReviewStackData", { default = true, ctermfg = "Magenta", fg = "#bc8cff" })
+vim.api.nvim_set_hl(0, "GHReviewStackShared", { default = true, ctermfg = "Red", fg = "#ff7b72", bold = true })
 
 -- Fold guard for diff buffers. Other plugins (LSP, linters) asynchronously
 -- override foldmethod on diff buffers; this puts it back. It stands down

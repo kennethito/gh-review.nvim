@@ -96,6 +96,12 @@ lua/gh_review/
   local_store.lua             Local-scope comments, saved per branch in the git directory
   turn.lua                    Last-turn baseline: herdr watcher and fallback refs
   agent.lua                   Formats comments and sends them to a coding agent
+  help.lua                    `?` float: each surface's mapped keys (from its ACTIONS) and the commands
+  stack/build.lua             Stack generator: diff -> changed functions -> callers -> groups
+  stack/rows.lua              Flattens the stack graph into rows, each subtree drawn once
+  stack/view.lua              Async build, rendering into the files list, diff notes, ]s/[s
+  stack/lang/elixir.lua       Elixir adapter: definitions and calls from tree-sitter
+  stack/lang/lua.lua          Lua adapter (fixture language for the tests)
 syntax/
   gh-review-files.vim         Syntax highlighting for the files list
   gh-review-thread.vim        Syntax highlighting for the thread buffer
@@ -413,6 +419,56 @@ following agents as they come and go would need resubscribing; polling keeps thi
 herdr, `turn.baseline()` takes the newest (by ref file mtime) of that ref, herdr-reviewr's, and
 reviewr.nvim's, or a `:GHReviewTurn` mark.
 
+## Stack view
+
+`files.lua` has two modes, `files` and `stack`. Both render a title line plus the body's own two
+header lines, and keep an explicit `line -> item` map (the old `lnum - 3` file index is gone).
+
+### Language adapters (`stack/lang/*.lua`)
+
+Each adapter is chosen by extension and provides:
+
+- `analyze(source, path)` -> `{ defs, calls, frames, imports }`. Defs merge clauses with the same
+  module/name/arity and keep each clause range; `min_arity`/`max_arity` cover default arguments. Calls
+  are `remote`, `local` (resolved against the enclosing module or its imports), `capture`, or
+  `dynamic` (adjacent `Module, :atom, [list]` arguments or tuple elements). Each call carries `from`,
+  the enclosing def's key or a pseudo frame (`test "…"`, module body).
+- `reaches(call, def, analysis)`, `search_terms(def)`, `is_test(path)`, `entry_label(def)`,
+  `data_keys(line)`.
+
+Elixir specifics: guarded heads (`when`), `, do:` bodies, nested modules named under their parent and
+auto-aliased, `alias A.{B, C}`, `as:`, partial aliases (`BigPlay.NFL.f` after `alias X.BigPlay`),
+`__MODULE__` chains, pipes (+1 arity), captures (`&f/1`, `&M.f/2`). Comment nodes are skipped
+everywhere, since tree-sitter keeps them as named children inside pipelines and argument lists.
+
+### Generator (`stack/build.lua`)
+
+1. Changed functions: each changed file is parsed at base (`git show`) and head. A def is `new` when
+   base has no def with that module/name and an overlapping arity range, `changed` when its own text
+   (all clauses) differs, `deleted` when only base has it. Comparing text, not hunk ranges, matters:
+   diff hunks often spill onto a neighbour's `end` line when code is inserted next to it.
+2. Callers, one level at a time: two `rg` runs per level (all names, then all module segments over the
+   matching files) give each frame's candidate files; those are parsed (cached by path, mtime, size)
+   and calls matched with `reaches`. The climb stops after `max_context_hops` consecutive unchanged
+   frames, at `max_depth`, or at `max_frames`. Test files are skipped unless `stack.tests`.
+3. Roots are frames with no callers. Each root's single-callee chain is followed to the first changed
+   or branching frame; roots that converge on the same frame form one group.
+4. The feature: groups taken greedily by the amount of changed code they reach; a group joins unless
+   half of its changed frames are already covered. Other groups are entry points into that code.
+   `shared` marks the frame where such a group first enters the feature.
+5. Data edges: string keys written in added lines of one changed function and read in added lines of
+   another, in another file, and containing `_`.
+
+Measured on sleeperbot #19778 (2,789 `.ex` files): 108 changed functions, 146 frames, 125 files
+parsed, 19 `rg` runs, about 3s cold.
+
+### View (`stack/view.lua`)
+
+The build runs in a coroutine resumed with `vim.schedule`; the adapter yields after each file, and the
+list redraws every 25 files. The result is cached per scope, base and file list, and invalidated on
+scope switches and refreshes. `rows.lua` draws each subtree once and references it elsewhere. Notes in
+the diff use their own namespace, cleared when the diff closes.
+
 ## Testing
 
 Tests run in headless Neovim (`nvim --clean --headless`) and use a custom `run_test()` harness that wraps each test function in `pcall()` to capture errors. Test files:
@@ -430,6 +486,10 @@ Tests run in headless Neovim (`nvim --clean --headless`) and use a custom `run_t
 | `test_scopes.lua`     | Local scopes against a temp repo: file lists, real-file diff, comments, store, viewed, scope switching, send |
 | `test_agent.lua`      | Message format, herdr candidates and paste, reviewr and clipboard fallbacks |
 | `test_turn.lua`       | Status folding, turn edges, snapshots, watcher, baseline ref precedence |
+| `test_stack_build.lua` | Generator on a Lua fixture repo: statuses, callers, dynamic edges, recursion, grouping, shared, limits, cache |
+| `test_stack_elixir.lua` | Elixir adapter (skipped without the parser): heads, arities, aliases, imports, captures, pipes, triples, test frames, data keys |
+| `test_help.lua`       | `?` float: configured keys per surface, disabled keys omitted, command descriptions, close/toggle |
+| `test_stack_view.lua` | Stack mode in the files list: build, folds, `<CR>`, see-above jumps, diff notes, `]s`, `P`, no-checkout message |
 
 Headless Neovim constraints:
 - `startinsert` crashes in headless mode; tests pass body content directly to `open_new()` instead.
