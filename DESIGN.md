@@ -474,6 +474,15 @@ everywhere, since tree-sitter keeps them as named children inside pipelines and 
 Measured on sleeperbot #19778 (2,789 `.ex` files): 108 changed functions, 146 frames, 125 files
 parsed, 19 `rg` runs, about 3s cold.
 
+### Folding
+
+Stack mode uses `foldmethod=expr` with `files.foldexpr()`, which looks up a per-line level computed at
+render time from each row's depth (`files.fold_levels`): a row whose next row is deeper starts a fold
+(`>N`), others sit at their depth, and section titles and header lines are 0. The table is set before the
+lines are written, since that is when Neovim recomputes expression folds. Expression folds keep their
+open/closed state across redraws (build progress, `R`), which manual folds rebuilt on each render did not.
+Measured on a 2,200-row view: about 4 ms to compute.
+
 ### View (`stack/view.lua`)
 
 The build runs in a coroutine resumed with `vim.schedule`; the adapter yields after each file, and the

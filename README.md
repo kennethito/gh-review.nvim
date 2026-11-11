@@ -239,7 +239,7 @@ Press `s` in the files list to see the change as call stacks instead of files: o
 - Entry points that converge on the same code fold into one line (`+4 more entries`). A function reached twice is drawn once; later rows say `↪ … (see above)`.
 - `⚠ N`: an entry point outside the change also reaches this function: existing callers of code the change modified. Only the frame where they cross in is marked.
 - `◆ key`: a string key written by one changed function and read by another, in another file (heuristic, from added lines only).
-- `<CR>` opens any function: changed code (and anything else in a changed file) as a diff at the function, a removed function on the base side, and a function in an unchanged file as the plain file at that line; `]s` / `[s` in the diff step through the changed functions in stack order; `<Tab>` folds an entry group; the diff shows the same marks as virtual text.
+- `<CR>` opens any function: changed code (and anything else in a changed file) as a diff at the function, a removed function on the base side, and a function in an unchanged file as the plain file at that line; `]s` / `[s` in the diff step through the changed functions in stack order; `<Tab>` folds any frame with what it calls (the fold column shows `▾` open and `▸` folded, a folded frame keeps its line and adds `··· N frames`; every level folds, `zM`/`zr` collapse or open a level across all stacks, and folds survive redraws); the diff shows the same marks as virtual text.
 - `P` moves the files list between the bottom and the left.
 - After the change's own entry points come: changed functions with no callers found; other entry points into changed code, one row per place they cross in with the entries under it; compile-time module bodies; code reached only from tests.
 
@@ -287,7 +287,7 @@ gF                      Jump to the file with LSP (checkout only)
 | `S`       | Send comments to a coding agent            |
 | `p` `b` `u` `t` | Scope: PR / branch / uncommitted / last turn |
 | `s`       | Toggle the stack view                      |
-| `<Tab>`   | Fold or unfold an entry group (stack view) |
+| `<Tab>`   | Fold or unfold a frame and what it calls (stack view; `zM`/`zr` work by level) |
 | `P`       | Move the list between the bottom and the left |
 | `?`       | Show every key (files list, diff, comment buffer) and command |
 | `gu`      | Switch the diff between side-by-side and unified |

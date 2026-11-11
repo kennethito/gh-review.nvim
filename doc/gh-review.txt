@@ -327,7 +327,12 @@ R                       Refresh review threads from GitHub.  In a local
 S                       Send comments to a coding agent (|:GHReviewSend|).
 p b u t                 Scope: PR, branch, uncommitted, last turn.
 s                       Toggle the stack view (|gh-review-stack|).
-<Tab>                   Fold or unfold an entry group in the stack view.
+<Tab>                   Stack view: fold or unfold the frame under the
+                        cursor and what it calls.  Every level folds, so
+                        |zM| and |zr| collapse or open a level across all
+                        stacks; folds survive redraws.  The fold column
+                        shows ▾ (open) and ▸ (folded); a folded frame
+                        keeps its line and adds "··· N frames".
 P                       Move the list between the bottom and the left.
 ?                       Show every key (files list, diff, comment buffer)
                         and command, as configured, in a float.  q, <Esc>,

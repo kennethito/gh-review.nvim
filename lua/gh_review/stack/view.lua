@@ -163,7 +163,8 @@ function M.render()
       if #row.roots > 1 then
         label = string.format("%s  (+%d more entries)", label, #row.roots - 1)
       end
-      local text = string.format("%s▾ %s  %s", string.rep("  ", row.depth or 0), label,
+      -- The fold column shows whether the entry is open (▾) or folded (▸).
+      local text = string.format("%s%s  %s", string.rep("  ", row.depth or 0), label,
         short_path(row.node.path, row.node.line))
       -- A root where the climb stopped is not a real entry point.
       if row.truncated then text = text .. "  ↑ climb stopped here" end

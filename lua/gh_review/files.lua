@@ -11,6 +11,60 @@ local ns = vim.api.nvim_create_namespace("gh_review_files")
 
 -- "files" lists the changed files; "stack" shows the call stacks into them.
 local mode = "files"
+-- Per files buffer, the fold level of each line in stack mode (see foldexpr).
+local fold_levels = {}
+
+-- Fold levels from each line's depth in the stack. A line whose next row is
+-- deeper starts a fold (">N"); others sit at their depth. Section titles and
+-- header lines are depth 0, which ends every fold.
+function M.fold_levels(line_items, count)
+  local depths = {}
+  for lnum = 1, count do
+    local item = line_items[lnum]
+    local row = item and item.row
+    depths[lnum] = (row and row.kind ~= "section") and (row.depth or 0) or 0
+  end
+  local levels = {}
+  for lnum = 1, count do
+    local d = depths[lnum]
+    local next_depth = depths[lnum + 1]
+    local row = (line_items[lnum] or {}).row
+    if row and row.kind ~= "section" and next_depth and next_depth > d then
+      levels[lnum] = ">" .. (d + 1)
+    else
+      levels[lnum] = tostring(d)
+    end
+  end
+  return levels
+end
+
+function M.foldexpr()
+  local levels = fold_levels[vim.api.nvim_get_current_buf()]
+  return levels and levels[vim.v.lnum] or "0"
+end
+
+-- A closed frame keeps its own line and colours, and says how much is folded.
+function M.foldtext()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local row = vim.v.foldstart - 1
+  local text = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+  -- Colour each byte from the row's extmarks, later (narrower) marks on top.
+  local hl = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns, { row, 0 }, { row, -1 }, { details = true })) do
+    local first, last = m[3], (m[4].end_col or #text) - 1
+    for i = first, math.min(last, #text - 1) do hl[i] = m[4].hl_group end
+  end
+  local chunks, start = {}, 0
+  for i = 1, #text do
+    if i == #text or hl[i] ~= hl[start] then
+      chunks[#chunks + 1] = { text:sub(start + 1, i), hl[start] or "Normal" }
+      start = i
+    end
+  end
+  local hidden = vim.v.foldend - vim.v.foldstart
+  chunks[#chunks + 1] = { string.format("   ··· %d frame%s", hidden, hidden == 1 and "" or "s"), "Comment" }
+  return chunks
+end
 -- What each buffer line stands for: { kind = "file", path } or a stack item.
 local items = {}
 
@@ -108,6 +162,9 @@ local function render()
   end
 
   local bufnr = state.get_files_bufnr()
+  -- Stack mode folds by depth: every frame with frames below it can fold.
+  -- Set before the lines change, which is when Neovim recomputes the folds.
+  fold_levels[bufnr] = mode == "stack" and M.fold_levels(items, #lines) or nil
   vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
@@ -120,25 +177,27 @@ local function render()
   local winid_for_folds = vim.fn.bufwinid(bufnr)
   if winid_for_folds ~= -1 then
     vim.api.nvim_win_call(winid_for_folds, function()
-      vim.wo.foldmethod = "manual"
-      vim.cmd("silent! normal! zE")
       if mode == "stack" then
-        -- One fold per entry group, from its header to the line before the next.
-        local starts = {}
-        for lnum = 1, #lines do
-          local item = items[lnum]
-          if item and item.row and (item.row.kind == "group" or item.row.kind == "section") then
-            starts[#starts + 1] = lnum
-          end
-        end
-        for i, first in ipairs(starts) do
-          local last = (starts[i + 1] or (#lines + 1)) - 1
-          if last > first and items[first].row.kind == "group" then
-            vim.cmd(string.format("silent! %d,%dfold", first, last))
-          end
+        if vim.wo.foldmethod ~= "expr" then
+          vim.wo.foldmethod = "expr"
+          vim.wo.foldexpr = "v:lua.require'gh_review.files'.foldexpr()"
+          vim.wo.foldtext = "v:lua.require'gh_review.files'.foldtext()"
+          -- Start fully open; later redraws keep whatever is folded.
+          vim.wo.foldlevel = 99
         end
         vim.wo.foldenable = true
-        vim.cmd("silent! normal! zR")
+        -- ▾ where a frame's fold is open, ▸ where it is closed. A custom
+        -- 'statuscolumn' (LazyVim sets one globally) replaces the fold column,
+        -- so this window draws the plain one.
+        vim.wo.statuscolumn = ""
+        vim.wo.foldcolumn = "1"
+        vim.wo.fillchars = "foldopen:▾,foldclose:▸,foldsep: ,fold: "
+      else
+        vim.wo.foldcolumn = "0"
+        if vim.wo.foldmethod ~= "manual" then
+          vim.wo.foldmethod = "manual"
+          vim.cmd("silent! normal! zE")
+        end
       end
     end)
   end
@@ -281,7 +340,7 @@ local ACTIONS = {
   scope_uncommitted = { { "n", function() require("gh_review").set_scope("uncommitted") end, "Scope: uncommitted" } },
   scope_turn        = { { "n", function() require("gh_review").set_scope("turn") end, "Scope: last turn" } },
   toggle_stack      = { { "n", function() M.toggle_stack() end, "Toggle stack view" } },
-  toggle_fold       = { { "n", function() vim.cmd("silent! normal! za") end, "Fold or unfold an entry group" } },
+  toggle_fold       = { { "n", function() vim.cmd("silent! normal! za") end, "Fold or unfold a frame and what it calls" } },
   toggle_position   = { { "n", function() M.toggle_position() end, "Move list left/bottom" } },
   help              = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },
   toggle_view       = { { "n", function() require("gh_review.diff").toggle_view() end, "Toggle side-by-side / unified" } },
