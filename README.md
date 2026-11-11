@@ -77,6 +77,7 @@ require("gh_review").setup({
       preview      = "K",
       toggle_files = "gf",
       goto_file    = "gF",
+      to_stack     = "gS",   -- show the function under the cursor in the stack view
       close        = "q",
       -- off by default: the head pane is your real file
       send              = false,
@@ -220,7 +221,7 @@ Review your own working tree, or an agent's changes, the same way: no PR and no 
 
 `gu` (in the diff or the files list) switches between side-by-side and unified, keeping the file and line; `diff_view = "unified"` makes it the default.
 
-The unified view is one window on the head file itself, so LSP, go-to-definition, and editing work as usual. Added and changed lines are highlighted (the changed characters too), removed lines are drawn above where they were (they are not part of the file), and unchanged stretches fold with three lines of context. `]c` / `[c` jump between changes. `gc` on a line with removed lines above it asks whether to comment on that line or on the removed lines (the base side); base-side comments show on the head line their code maps to, marked `(base)`.
+The unified view is one window on the head file itself, so LSP, go-to-definition, and editing work as usual. Added and changed lines are highlighted (the changed characters too), removed lines are drawn above where they were (they are not part of the file), and unchanged stretches fold with three lines of context. `]c` / `[c` jump between changes. On added lines the cursor line uses `GHReviewUnifiedCursorLine` (by default your colour scheme's `DiffAdd` lifted towards the text colour), since the added-line background would otherwise hide it. `gc` on a line with removed lines above it asks whether to comment on that line or on the removed lines (the base side); base-side comments show on the head line their code maps to, marked `(base)`.
 
 Inside a changed line, the changed **words** are marked in both views (`diff_inline = "word"`; `"char"` marks characters, `"off"` neither). Side by side this is Neovim's `diffopt` `inline:word` (Neovim 0.12+), set while a review diff is open and restored when it closes.
 
@@ -239,7 +240,7 @@ Press `s` in the files list to see the change as call stacks instead of files: o
 - Entry points that converge on the same code fold into one line (`+4 more entries`). A function reached twice is drawn once; later rows say `↪ … (see above)`.
 - `⚠ N`: an entry point outside the change also reaches this function: existing callers of code the change modified. Only the frame where they cross in is marked.
 - `◆ key`: a string key written by one changed function and read by another, in another file (heuristic, from added lines only).
-- `<CR>` opens any function: changed code (and anything else in a changed file) as a diff at the function, a removed function on the base side, and a function in an unchanged file as the plain file at that line; `]s` / `[s` in the diff step through the changed functions in stack order; `<Tab>` folds any frame with what it calls (the fold column shows `▾` open and `▸` folded, a folded frame keeps its line and adds `··· N frames`; every level folds, `zM`/`zr` collapse or open a level across all stacks, and folds survive redraws); the diff shows the same marks as virtual text.
+- `<CR>` opens any function: changed code (and anything else in a changed file) as a diff at the function, a removed function on the base side, and a function in an unchanged file as the plain file at that line; `]s` / `[s` in the diff step through the changed functions in stack order, and `gS` jumps from the function under the cursor to its row in the stack view (building the view first if needed); `<Tab>` folds any frame with what it calls (the fold column shows `▾` open and `▸` folded, a folded frame keeps its line and adds `··· N frames`; every level folds, `zM`/`zr` collapse or open a level across all stacks, and folds survive redraws); the diff shows the same marks as virtual text.
 - `P` moves the files list between the bottom and the left.
 - After the change's own entry points come: changed functions with no callers found; other entry points into changed code, one row per place they cross in with the entries under it; compile-time module bodies; code reached only from tests.
 

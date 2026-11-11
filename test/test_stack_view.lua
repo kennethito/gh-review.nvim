@@ -232,6 +232,66 @@ h.run_test("After a plain file, a changed frame still opens as a diff", function
   h.assert_true(vim.wo[vim.fn.bufwinid(state.get_right_bufnr())].diff)
 end)
 
+-- Open core.lua's diff with the cursor on `line` of the given side.
+local function diff_at(line, side)
+  local diff = require("gh_review.diff")
+  diff.open("lua/app/core.lua", { line = line, side = side })
+  repo.wait_for(function()
+    return state.get_left_bufnr() ~= -1 and state.get_diff_path() == "lua/app/core.lua"
+  end, "the diff")
+  vim.wait(100)
+  local win = vim.fn.bufwinid(side == "LEFT" and state.get_left_bufnr() or state.get_right_bufnr())
+  vim.fn.win_gotoid(win)
+  vim.api.nvim_win_set_cursor(win, { line, 0 })
+end
+
+local function in_files_list_on(pattern)
+  h.assert_equal(state.get_files_bufnr(), vim.api.nvim_get_current_buf(), "focus moved to the list")
+  local text = vim.api.nvim_get_current_line()
+  h.assert_match(pattern, text)
+  h.assert_false(text:find("↪", 1, true) ~= nil, "the expanded row, not a reference")
+end
+
+h.run_test("gS in the diff jumps to the function's row in the stack view", function()
+  diff_at(14, "RIGHT")
+  vim.api.nvim_feedkeys("gS", "mx", false)
+  in_files_list_on("^%s+%+ app%.core%.fresh/1")
+end)
+
+h.run_test("gS unfolds whatever hides the row", function()
+  vim.cmd("normal! zM")
+  diff_at(14, "RIGHT")
+  vim.api.nvim_feedkeys("gS", "mx", false)
+  in_files_list_on("app%.core%.fresh/1")
+  h.assert_equal(-1, vim.fn.foldclosed("."))
+  vim.cmd("normal! zR")
+end)
+
+h.run_test("gS on a removed function's base lines finds it under Removed", function()
+  diff_at(8, "LEFT")
+  vim.api.nvim_feedkeys("gS", "mx", false)
+  in_files_list_on("%- app%.core%.old/1")
+end)
+
+h.run_test("gS between functions stays put and says so", function()
+  diff_at(2, "RIGHT")
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_feedkeys("gS", "mx", false)
+  h.assert_equal(win, vim.api.nvim_get_current_win())
+end)
+
+h.run_test("gS before the stack view exists builds it, then jumps", function()
+  files.toggle_stack()
+  h.assert_equal("files", files.mode())
+  view.invalidate()
+  diff_at(14, "RIGHT")
+  vim.api.nvim_feedkeys("gS", "mx", false)
+  repo.wait_for(function() return view.result() ~= nil end, "the build")
+  repo.wait_for(function() return vim.api.nvim_get_current_buf() == state.get_files_bufnr() end, "the jump")
+  h.assert_equal("stack", files.mode())
+  in_files_list_on("^%s+%+ app%.core%.fresh/1")
+end)
+
 h.run_test("s goes back to the file list with three header lines", function()
   press("s")
   h.assert_equal("files", files.mode())

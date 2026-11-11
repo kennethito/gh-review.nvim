@@ -152,6 +152,42 @@ h.run_test("Unified: the head window keeps its own folds, not diff folding", fun
   h.assert_equal("manual", vim.wo[win].foldmethod, "the guard leaves a unified window alone")
 end)
 
+h.run_test("Unified: the cursor line on an added line has its own colour", function()
+  -- tokyonight-moon, where DiffAdd and CursorLine are nearly the same shade.
+  vim.api.nvim_set_hl(0, "Normal", { fg = 0xc8d3f5, bg = 0x222436 })
+  vim.api.nvim_set_hl(0, "DiffAdd", { bg = 0x2a4556 })
+  vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", {})
+  vim.api.nvim_exec_autocmds("ColorScheme", {})
+  local hl = vim.api.nvim_get_hl(0, { name = "GHReviewUnifiedCursorLine", link = false })
+  h.assert_equal(0x4a6176, hl.bg, "DiffAdd lifted a fifth towards the text colour")
+
+  local right = state.get_right_bufnr()
+  local win = vim.fn.bufwinid(right)
+  vim.fn.win_gotoid(win)
+  vim.wo[win].cursorline = true
+  local function cursor_marks()
+    local found = {}
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(right, unified.cursor_ns, 0, -1, { details = true })) do
+      found[#found + 1] = (m[2] + 1) .. ":" .. tostring(m[4].line_hl_group)
+    end
+    return table.concat(found, ",")
+  end
+  vim.api.nvim_win_set_cursor(win, { 2, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = right })
+  h.assert_equal("2:GHReviewUnifiedCursorLine", cursor_marks(), "on an added line")
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
+  vim.api.nvim_exec_autocmds("CursorMoved", { buffer = right })
+  h.assert_equal("", cursor_marks(), "the normal cursor line elsewhere")
+end)
+
+h.run_test("A user's own GHReviewUnifiedCursorLine survives a colour scheme change", function()
+  vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", { bg = 0x123456 })
+  vim.api.nvim_exec_autocmds("ColorScheme", {})
+  h.assert_equal(0x123456, vim.api.nvim_get_hl(0, { name = "GHReviewUnifiedCursorLine" }).bg)
+  vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", {})
+  vim.api.nvim_exec_autocmds("ColorScheme", {})
+end)
+
 h.run_test("Unified: ]c and [c jump between changes", function()
   local win = vim.fn.bufwinid(state.get_right_bufnr())
   vim.fn.win_gotoid(win)

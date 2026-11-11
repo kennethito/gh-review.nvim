@@ -8,6 +8,11 @@
 local M = {}
 
 M.ns = vim.api.nvim_create_namespace("gh_review_unified")
+-- The cursor line on added lines, redrawn as the cursor moves.
+M.cursor_ns = vim.api.nvim_create_namespace("gh_review_unified_cursor")
+
+-- Per buffer: the head rows (0-based) the unified view highlights as added.
+local added_rows = {}
 
 -- Lines of context kept unfolded around each hunk.
 M.CONTEXT = 3
@@ -148,6 +153,7 @@ function M.render(bufnr, base_lines)
   local tabstop = vim.bo[bufnr].tabstop
   local head_count = #head_lines
 
+  local added = {}
   for _, h in ipairs(hunks) do
     local a_start, a_count, b_start, b_count = h[1], h[2], h[3], h[4]
     local pairs_count = math.min(a_count, b_count)
@@ -163,6 +169,7 @@ function M.render(bufnr, base_lines)
     for i = 0, b_count - 1 do
       local row = b_start + i - 1
       vim.api.nvim_buf_set_extmark(bufnr, M.ns, row, 0, { line_hl_group = "DiffAdd", priority = 50 })
+      added[row] = true
       if i < pairs_count then
         local _, new_ranges = intraline(base_lines[a_start + i] or "", head_lines[b_start + i] or "")
         for _, r in ipairs(new_ranges or {}) do
@@ -176,14 +183,44 @@ function M.render(bufnr, base_lines)
     end
   end
   vim.b[bufnr].gh_review_unified_hunks = hunks
+  added_rows[bufnr] = added
+  M.track_cursor(bufnr)
   return hunks
 end
 
 function M.clear(bufnr)
   if bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
     vim.api.nvim_buf_clear_namespace(bufnr, M.ns, 0, -1)
+    vim.api.nvim_buf_clear_namespace(bufnr, M.cursor_ns, 0, -1)
+    pcall(vim.api.nvim_del_augroup_by_name, "gh_review_unified_cursor_" .. bufnr)
     vim.b[bufnr].gh_review_unified_hunks = nil
+    added_rows[bufnr] = nil
   end
+end
+
+-- An added line's background replaces the cursor line, and in many colour
+-- schemes DiffAdd and CursorLine are close shades, so inside a new function
+-- the cursor line vanished. Draw a distinct one there as the cursor moves.
+function M.show_cursor(bufnr)
+  vim.api.nvim_buf_clear_namespace(bufnr, M.cursor_ns, 0, -1)
+  local rows = added_rows[bufnr]
+  local winid = vim.fn.bufwinid(bufnr)
+  if not rows or winid == -1 or not vim.wo[winid].cursorline then return end
+  local row = vim.api.nvim_win_get_cursor(winid)[1] - 1
+  if rows[row] then
+    vim.api.nvim_buf_set_extmark(bufnr, M.cursor_ns, row, 0,
+      { line_hl_group = "GHReviewUnifiedCursorLine", priority = 55 })
+  end
+end
+
+function M.track_cursor(bufnr)
+  local group = vim.api.nvim_create_augroup("gh_review_unified_cursor_" .. bufnr, { clear = true })
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "BufEnter" }, {
+    group = group,
+    buffer = bufnr,
+    callback = function() M.show_cursor(bufnr) end,
+  })
+  M.show_cursor(bufnr)
 end
 
 -- Head line ranges a hunk touches, context included.

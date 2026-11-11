@@ -41,6 +41,7 @@ M.defaults = {
       preview      = "K",
       toggle_files = "gf",
       goto_file    = "gF",
+      to_stack     = "gS",
       close        = "q",
       send              = false,
       scope_pr          = false,

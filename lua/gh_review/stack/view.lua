@@ -46,7 +46,7 @@ end
 function M.ensure(on_update)
   local key = cache_key()
   if current.key == key and (current.result or current.building) then return end
-  current = { key = key, result = nil, building = true, progress = 0, error = nil, rows = nil }
+  current = { key = key, result = nil, building = true, progress = 0, error = nil, rows = nil, waiters = {} }
   local mine = current
 
   local opts = vim.deepcopy(config.options.stack)
@@ -77,6 +77,8 @@ function M.ensure(on_update)
       mine.rows = rows_mod.build(result)
       if on_update then on_update() end
       require("gh_review.diff").refresh_signs()
+      for _, waiter in ipairs(mine.waiters) do waiter() end
+      mine.waiters = {}
       return
     end
     -- Redraw the progress line now and then, not on every file.
@@ -84,6 +86,38 @@ function M.ensure(on_update)
     vim.schedule(step)
   end
   vim.schedule(step)
+end
+
+-- Run `fn` once the current build has finished (now, if it has). Starts no
+-- build itself: the caller has called M.ensure.
+function M.when_built(fn)
+  if current.result then
+    fn()
+  elseif current.building then
+    current.waiters = current.waiters or {}
+    table.insert(current.waiters, fn)
+  end
+end
+
+-- The frame for a position in the diff: the function whose clauses hold
+-- `line` in `path` on the head side, or a removed one on the base side. The
+-- innermost wins when clauses nest (a module inside a module).
+function M.node_at(path, line, side)
+  local result = current.result
+  if not result then return nil end
+  local candidates = side == "LEFT" and result.removed or vim.tbl_values(result.nodes)
+  local best, best_span = nil, math.huge
+  for _, node in ipairs(candidates) do
+    if node.path == path and node.kind == "def" then
+      for _, clause in ipairs(node.clauses or {}) do
+        local span = clause[2] - clause[1]
+        if line >= clause[1] and line <= clause[2] and span < best_span then
+          best, best_span = node, span
+        end
+      end
+    end
+  end
+  return best
 end
 
 -- ------- Rendering into the files list -------

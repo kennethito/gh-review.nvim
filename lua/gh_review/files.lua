@@ -308,6 +308,61 @@ function M.toggle_stack()
   end
 end
 
+-- Put the cursor on `key`'s expanded row in the stack view (not a "see above"
+-- reference), unfolding what hides it, and focus the list. False when the
+-- view has no row for it.
+function M.reveal(key)
+  local bufnr = state.get_files_bufnr()
+  local winid = bufnr ~= -1 and vim.fn.bufwinid(bufnr) or -1
+  if winid == -1 then return false end
+  local fallback = nil
+  for lnum = 1, vim.api.nvim_buf_line_count(bufnr) do
+    local row = (items[lnum] or {}).row
+    if row and row.node and row.node.key == key then
+      if row.kind == "frame" and not row.ref then
+        fallback = lnum
+        break
+      end
+      fallback = fallback or lnum
+    end
+  end
+  if not fallback then return false end
+  vim.fn.win_gotoid(winid)
+  vim.api.nvim_win_set_cursor(winid, { fallback, 0 })
+  vim.cmd("normal! zvzz")
+  return true
+end
+
+-- From the diff: show the function at `path`:`line` in the stack view,
+-- opening the list, switching it to the stack view and waiting for the build
+-- as needed.
+function M.show_in_stack(path, line, side)
+  local view = require("gh_review.stack.view")
+  local bufnr = state.get_files_bufnr()
+  if bufnr == -1 or vim.fn.bufexists(bufnr) == 0 or vim.fn.bufwinid(bufnr) == -1 then
+    local from = vim.api.nvim_get_current_win()
+    M.open()
+    -- Opening the list moves the cursor; the reveal below decides focus.
+    if vim.api.nvim_win_is_valid(from) and view.result() == nil then vim.fn.win_gotoid(from) end
+  end
+  if mode ~= "stack" then M.toggle_stack() end
+  local reason = view.unavailable()
+  if reason then
+    vim.notify("[gh-review] " .. reason, vim.log.levels.WARN)
+    return
+  end
+  view.ensure(function() M.rerender() end)
+  if not view.result() then print("Building the stack view…") end
+  view.when_built(function()
+    local node = view.node_at(path, line, side)
+    if not node then
+      print("No function here in the stack view")
+    elseif not M.reveal(node.key) then
+      print("That function has no row in the stack view")
+    end
+  end)
+end
+
 -- Move the list between the bottom and the left, keeping mode and cursor.
 function M.toggle_position()
   local options = config.options

@@ -548,6 +548,9 @@ local ACTIONS = {
   toggle_files = { { "n", function() require("gh_review.files").toggle() end,
                      "Toggle files list" } },
   goto_file    = { { "n", function() M.goto_file() end, "Go to file (checkout only)" } },
+  to_stack     = { { "n", function()
+    require("gh_review.files").show_in_stack(state.get_diff_path(), vim.fn.line("."), get_current_side())
+  end, "Show this function in the stack view" } },
   next_frame   = { { "n", function() require("gh_review.stack.view").step(1) end, "Next changed frame" } },
   prev_frame   = { { "n", function() require("gh_review.stack.view").step(-1) end, "Previous changed frame" } },
   help         = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },

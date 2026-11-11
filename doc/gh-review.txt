@@ -408,6 +408,7 @@ Defaults, by surface: >lua
       preview      = "K",
       toggle_files = "gf",
       goto_file    = "gF",
+      to_stack     = "gS",
       close        = "q",
       send              = false,
       scope_pr          = false,
@@ -562,6 +563,10 @@ Entry points whose call chains converge on the same function fold into one
 line.  The largest groups form the change itself; smaller ones that mostly
 reach the same code are listed under "Other entry points into changed code".
 
+`gS` in the diff goes the other way: from the function under the cursor to
+its row in the stack view (a removed one from the base side), opening the
+list and building the view first when needed, and unfolding what hides it.
+
 <CR> opens any function: one in a changed file as a diff at the function, a
 removed one on the base side of its diff, and one in an unchanged file (a
 caller on the way to the change) as the plain file at that line.  In the diff, `]s` and `[s` step
@@ -594,7 +599,10 @@ definition and editing work as usual.  Added and changed lines are
 highlighted (DiffAdd, with the changed characters in DiffText), removed
 lines are drawn as virtual lines (DiffDelete) above where they were, and
 unchanged stretches fold with three lines of context.  `]c` and `[c` jump
-between changes.
+between changes.  On added lines the cursor line is drawn with
+`GHReviewUnifiedCursorLine` (default: DiffAdd lifted towards the text
+colour, recomputed on |ColorScheme|), since the added-line background would
+otherwise hide 'cursorline'.
 
 The base file is loaded but not shown.  `gc` on a line with removed lines
 drawn above it asks whether to comment on the line or on the removed lines;

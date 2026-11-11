@@ -79,6 +79,35 @@ vim.api.nvim_set_hl(0, "GHReviewStackDynamic", { default = true, ctermfg = "Cyan
 vim.api.nvim_set_hl(0, "GHReviewStackData", { default = true, ctermfg = "Magenta", fg = "#bc8cff" })
 vim.api.nvim_set_hl(0, "GHReviewStackShared", { default = true, ctermfg = "Red", fg = "#ff7b72", bold = true })
 
+-- The cursor line on an added line in the unified view: the colour scheme's
+-- DiffAdd background lifted a fifth of the way towards its text colour, so it
+-- stands out from the added lines around it in any scheme. Recomputed when
+-- the colour scheme changes; a user-defined GHReviewUnifiedCursorLine wins.
+local function unified_cursor_hl()
+  local existing = vim.api.nvim_get_hl(0, { name = "GHReviewUnifiedCursorLine", create = false })
+  if next(existing) and not existing.default then return end
+  local add = vim.api.nvim_get_hl(0, { name = "DiffAdd", link = false })
+  local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  if not (add.bg and normal.fg) then
+    vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", { default = true, link = "Visual" })
+    return
+  end
+  local function mix(a, b, t)
+    local out = 0
+    for shift = 16, 0, -8 do
+      local x, y = bit.band(bit.rshift(a, shift), 0xff), bit.band(bit.rshift(b, shift), 0xff)
+      out = out + bit.lshift(math.floor(x + (y - x) * t + 0.5), shift)
+    end
+    return out
+  end
+  vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", { default = true, bg = mix(add.bg, normal.fg, 0.2) })
+end
+unified_cursor_hl()
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("gh_review_highlights", { clear = true }),
+  callback = unified_cursor_hl,
+})
+
 -- Fold guard for diff buffers. Other plugins (LSP, linters) asynchronously
 -- override foldmethod on diff buffers; this puts it back. It stands down
 -- entirely when the user has turned fold management off, because fighting for
