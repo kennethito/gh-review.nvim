@@ -16,6 +16,23 @@ function M.frame_label(node)
   return string.format("%s.%s/%s", short_module(node.module), node.name, arity)
 end
 
+-- "via Tool": the behaviour a dispatched call reached this function through.
+function M.via(node)
+  local names = {}
+  for _, b in ipairs(node.behaviours or {}) do names[#names + 1] = b:match("[^.]+$") end
+  return #names > 0 and ("via " .. table.concat(names, "/")) or "via a module value"
+end
+
+-- A module body that references functions with captures (Absinthe's
+-- `resolve &Resolver.f/2`, router plugs) wires them up for runtime; one that
+-- calls them runs them at compile time.
+function M.wires(result, key)
+  for _, callee in ipairs(result.callees[key] or {}) do
+    if callee.kind == "capture" then return true end
+  end
+  return false
+end
+
 function M.build(result)
   local rows = {}
   local drawn = {}
@@ -33,19 +50,14 @@ function M.build(result)
     end
   end
 
-  local section = nil
-  for gi, group in ipairs(result.groups) do
-    local title = nil
-    if not group.primary then
-      title = group.tests and "Reached only from tests" or "Other entry points into changed code"
-    end
-    if title ~= section then
-      if title then rows[#rows + 1] = { kind = "section", title = title } end
-      section = title
-    end
+  local function group_row(gi, group, depth)
+    rows[#rows + 1] = { kind = "group", group = gi, roots = group.roots, node = group.roots[1],
+      truncated = group.truncated, depth = depth or 0 }
+  end
+
+  local function draw_group(gi, group)
     local first = group.roots[1]
-    rows[#rows + 1] = { kind = "group", group = gi, roots = group.roots, node = first,
-      truncated = group.truncated }
+    group_row(gi, group)
     drawn[first.key] = true
     if #group.roots > 1 then
       -- Grouped roots converge on one frame: draw from there, once.
@@ -55,6 +67,93 @@ function M.build(result)
         walk(callee.key, 1, callee.kind)
       end
     end
+  end
+
+  -- Sort the groups into the change itself and the sections after it.
+  local main, isolated, bodies, outside_groups, tests = {}, {}, {}, {}, {}
+  for gi, group in ipairs(result.groups) do
+    local first = group.roots[1]
+    if group.tests then
+      tests[#tests + 1] = gi
+    elseif first.kind == "body" and not M.wires(result, first.key) then
+      bodies[#bodies + 1] = gi
+    elseif group.primary and #group.roots == 1 and first.status ~= "context"
+      and #(result.callees[first.key] or {}) == 0 then
+      isolated[#isolated + 1] = gi
+    elseif group.primary then
+      main[#main + 1] = gi
+    else
+      outside_groups[#outside_groups + 1] = gi
+    end
+  end
+
+  for _, gi in ipairs(main) do draw_group(gi, result.groups[gi]) end
+
+  if #isolated > 0 then
+    -- Public functions nothing calls statically: called at runtime by name,
+    -- from tests only, or not yet.
+    rows[#rows + 1] = { kind = "section", title = "Changed, no callers found" }
+    for _, gi in ipairs(isolated) do
+      local node = result.groups[gi].roots[1]
+      drawn[node.key] = true
+      rows[#rows + 1] = { kind = "frame", depth = 0, node = node }
+    end
+  end
+
+  if #outside_groups > 0 then
+    -- Existing code reaching the change, summed up where it crosses in: one
+    -- row per crossing frame, with the entry points reaching it under it.
+    rows[#rows + 1] = { kind = "section", title = "Other entry points into changed code" }
+    local by_crossing, order, leftover = {}, {}, {}
+    for _, gi in ipairs(outside_groups) do
+      local crossed = false
+      for key, node in pairs(result.nodes) do
+        if node.shared_from and node.shared_from[gi] then
+          if not by_crossing[key] then
+            by_crossing[key] = {}
+            order[#order + 1] = key
+          end
+          table.insert(by_crossing[key], gi)
+          crossed = true
+        end
+      end
+      if not crossed then leftover[#leftover + 1] = gi end
+    end
+    table.sort(order, function(a, b)
+      if #by_crossing[a] ~= #by_crossing[b] then return #by_crossing[a] > #by_crossing[b] end
+      return a < b
+    end)
+    local shown = {}
+    for _, key in ipairs(order) do
+      rows[#rows + 1] = { kind = "frame", depth = 0, node = result.nodes[key], ref = drawn[key] or nil }
+      for _, gi in ipairs(by_crossing[key]) do
+        local group = result.groups[gi]
+        group_row(gi, group, 1)
+        if not shown[gi] then
+          -- Its own path down, which may hold changed code only it reaches;
+          -- anything already drawn shows as a reference.
+          shown[gi] = true
+          local first = group.roots[1]
+          drawn[first.key] = true
+          if #group.roots > 1 then
+            walk(group.converge, 2, group.converge_edge)
+          else
+            for _, callee in ipairs(result.callees[first.key] or {}) do walk(callee.key, 2, callee.kind) end
+          end
+        end
+      end
+    end
+    for _, gi in ipairs(leftover) do draw_group(gi, result.groups[gi]) end
+  end
+
+  if #bodies > 0 then
+    rows[#rows + 1] = { kind = "section", title = "Compile time (module bodies)" }
+    for _, gi in ipairs(bodies) do draw_group(gi, result.groups[gi]) end
+  end
+
+  if #tests > 0 then
+    rows[#rows + 1] = { kind = "section", title = "Reached only from tests" }
+    for _, gi in ipairs(tests) do draw_group(gi, result.groups[gi]) end
   end
 
   if #(result.unreached or {}) > 0 then
@@ -114,17 +213,19 @@ function M.to_text(result)
       if #row.roots > 1 then
         label = string.format("entered from %d: %s, …", #row.roots, label)
       end
-      lines[#lines + 1] = string.format("@ %s  %s:%d%s", label, node.path, node.line,
-        row.truncated and "  ↑ climb stopped here" or "")
+      lines[#lines + 1] = string.format("@ %s%s  %s:%d%s", string.rep("  ", row.depth or 0), label, node.path,
+        node.line, row.truncated and "  ↑ climb stopped here" or "")
     elseif row.kind == "file" then
       lines[#lines + 1] = string.format("  %s (%s)", row.file.path, row.file.changeType)
     elseif row.kind == "hunk" then
       lines[#lines + 1] = string.format("! %s:%d  %s", row.hunk.path, row.hunk.line, row.hunk.text)
     else
       local node = row.node
-      local mark = row.edge == "dynamic" and ">" or MARK[node.status] or " "
+      local async = row.edge == "dynamic" or row.edge == "dispatch"
+      local mark = async and ">" or MARK[node.status] or " "
       local notes = {}
       if row.edge == "dynamic" then notes[#notes + 1] = "⇢" end
+      if row.edge == "dispatch" then notes[#notes + 1] = "⇉ " .. M.via(node) end
       if node.shared then
         notes[#notes + 1] = string.format("⚠ also entered from %d other entr%s", node.shared,
           node.shared == 1 and "y" or "ies")

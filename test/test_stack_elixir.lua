@@ -168,4 +168,100 @@ h.run_test("Data keys: map writes and access reads", function()
   h.assert_equal(nil, reads.scoring_player_id)
 end)
 
+-- ------- Behaviours and dispatch -------
+
+local DISPATCH = [[
+defmodule App.Tool do
+  @callback run(map(), map()) :: map()
+end
+defmodule App.Tools.One do
+  @behaviour App.Tool
+  use Core.Logger
+  def run(input, ctx), do: input
+end
+defmodule App.Sports.NFL do
+  use App.Sport
+  def stat_keys, do: []
+end
+defmodule App.Tools do
+  alias App.Llm.Format
+  def call(tool, input) do
+    tool.run(input, %{})
+    App.Sport.module!(input).stat_keys()
+    opts.field
+    case input do
+      {:vertex, Format.Gemini} -> :ok
+    end
+  end
+end
+]]
+local dispatch = ex.analyze(DISPATCH)
+
+local function find_def(key)
+  for _, d in ipairs(dispatch.defs) do
+    if d.key == key then return d end
+  end
+end
+
+h.run_test("Dispatch: calls on a variable or expression, with parentheses", function()
+  local kinds = {}
+  for _, c in ipairs(dispatch.calls) do kinds[c.name] = c.kind end
+  h.assert_equal("dispatch", kinds.run)
+  h.assert_equal("dispatch", kinds.stat_keys)
+  h.assert_equal("remote", kinds["module!"], "the receiver's own call is recorded")
+  h.assert_equal(nil, kinds.field, "map access is not a call")
+end)
+
+h.run_test("Dispatch: behaviours, uses, callbacks and module values are recorded", function()
+  h.assert_equal("App.Tool", find_def("App.Tools.One.run/2").behaviours[1])
+  h.assert_equal("Core.Logger", find_def("App.Tools.One.run/2").uses[1])
+  h.assert_equal("App.Sport", find_def("App.Sports.NFL.stat_keys/0").uses[1])
+  h.assert_true(dispatch.callbacks["App.Tool"])
+  h.assert_true(dispatch.module_refs["App.Llm.Format.Gemini"])
+end)
+
+h.run_test("Dispatch reaches behaviour implementations and named module values only", function()
+  local call = { name = "run", arity = 2, kind = "dispatch", scope = "App.Tools" }
+  h.assert_true(ex.reaches(call, { name = "run", min_arity = 2, max_arity = 2, public = true,
+    module = "App.Tools.One", behaviours = { "App.Tool" } }, dispatch))
+  h.assert_false(ex.reaches(call, { name = "run", min_arity = 2, max_arity = 2, public = true,
+    module = "App.Other", behaviours = {} }, dispatch), "no behaviour, not named here")
+  h.assert_false(ex.reaches(call, { name = "run", min_arity = 2, max_arity = 2, public = false,
+    module = "App.Tools.One", behaviours = { "App.Tool" } }, dispatch), "private functions are not callbacks")
+  local render = { name = "render", arity = 2, kind = "dispatch", scope = "App.Tools" }
+  h.assert_true(ex.reaches(render, { name = "render", min_arity = 2, max_arity = 2, public = true,
+    module = "App.Llm.Format.Gemini", behaviours = {} }, dispatch), "a module named as a value")
+end)
+
+h.run_test("Dispatch in a build: callers found through the behaviour, not through `use Core.Logger`", function()
+  local repo = require("test.git_repo")
+  local local_git = require("gh_review.local_git")
+  local build = require("gh_review.stack.build")
+  local dir = vim.fn.resolve(vim.fn.tempname())
+  vim.fn.mkdir(dir, "p")
+  repo.git(dir, { "init", "-q", "-b", "main" })
+  repo.git(dir, { "config", "user.email", "t@example.com" })
+  repo.git(dir, { "config", "user.name", "T" })
+  repo.write(dir, "lib/sport.ex", { "defmodule App.Sport do", "  @callback keys() :: list()",
+    "  defmacro __using__(_), do: quote(do: @behaviour App.Sport)", "end" })
+  repo.write(dir, "lib/nfl.ex", { "defmodule App.Sports.NFL do", "  use App.Sport", "  def keys, do: [1]", "end" })
+  repo.write(dir, "lib/plain.ex", { "defmodule App.Plain do", "  use Core.Logger", "  def keys, do: [2]", "end" })
+  repo.write(dir, "lib/caller.ex", { "defmodule App.Caller do", "  alias App.Sport",
+    "  def go(sport), do: Sport.module!(sport).keys()", "end" })
+  repo.git(dir, { "add", "-A" })
+  repo.git(dir, { "commit", "-q", "-m", "base" })
+  local base = repo.git(dir, { "rev-parse", "HEAD" })
+  repo.write(dir, "lib/nfl.ex", { "defmodule App.Sports.NFL do", "  use App.Sport", "  def keys, do: [1, 2]", "end" })
+  repo.write(dir, "lib/plain.ex", { "defmodule App.Plain do", "  use Core.Logger", "  def keys, do: [3]", "end" })
+
+  local result = build.build({ root = dir, base = base,
+    files = local_git.changed_files(dir, base, local_git.snapshot(dir)) })
+  local edge = (result.callers["App.Sports.NFL.keys/0"] or {})["App.Caller.go/1"]
+  h.assert_true(edge ~= nil, "the dispatching caller is found")
+  h.assert_equal("dispatch", edge.kind)
+  h.assert_equal("App.Sport", result.nodes["App.Sports.NFL.keys/0"].behaviours[1])
+  h.assert_equal(nil, (result.callers["App.Plain.keys/0"] or {})["App.Caller.go/1"],
+    "use Core.Logger is not a behaviour")
+end)
+
 h.write_results("/tmp/gh_review_test_stack_elixir.txt")

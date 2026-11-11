@@ -139,11 +139,22 @@ local function def_text(def, lines)
   return table.concat(parts, "\n")
 end
 
-local function node_from_def(def, path, status)
+-- Behaviours a def's module implements: explicit @behaviour, plus `use X`
+-- where X declares callbacks (a plain `use Core.Logger` is not a behaviour).
+local function implemented(ctx, def)
+  local result = vim.list_slice(def.behaviours or {})
+  for _, used in ipairs(def.uses or {}) do
+    if ctx and ctx.callback_modules()[used] then result[#result + 1] = used end
+  end
+  return result
+end
+
+local function node_from_def(def, path, status, ctx)
   return {
     key = def.key, module = def.module, name = def.name, min_arity = def.min_arity,
     max_arity = def.max_arity, path = path, line = def.clauses[1][1], jump_line = def.clauses[1][1],
     clauses = def.clauses, status = status, kind = "def",
+    public = def.public, behaviours = implemented(ctx, def),
   }
 end
 
@@ -183,7 +194,7 @@ local function changed_functions(ctx)
         local differs = previous and def_text(previous, base_lines) ~= def_text(def, head_lines)
         local touched = differs and first_touch(def.clauses, ranges)
         if not previous or differs then
-          local node = node_from_def(def, f.path, previous and "changed" or "new")
+          local node = node_from_def(def, f.path, previous and "changed" or "new", ctx)
           node.jump_line = touched or node.line
           node.added = added_lines(def.clauses, ranges, head_lines)
           ctx.nodes[node.key] = node
@@ -193,7 +204,7 @@ local function changed_functions(ctx)
       local removed_clauses = {}
       for _, def in ipairs(base.defs) do
         if not overlapping(def, head_defs[def.module .. "." .. def.name]) then
-          local node = node_from_def(def, f.path, "deleted")
+          local node = node_from_def(def, f.path, "deleted", ctx)
           ctx.removed[#ctx.removed + 1] = node
           vim.list_extend(removed_clauses, def.clauses)
         end
@@ -261,10 +272,15 @@ local function candidate_files(ctx, nodes)
   local seen_name, seen_segment = {}, {}
   for _, node in ipairs(nodes) do
     local adapter = adapter_for(node.path)
-    local name, segment = adapter.search_terms(node)
-    node.search = { name, segment }
+    -- One segment, or several: a behaviour callback is also found through the
+    -- behaviour's name.
+    local name, node_segments = adapter.search_terms(node)
+    if type(node_segments) ~= "table" then node_segments = { node_segments } end
+    node.search = { name, node_segments }
     if not seen_name[name] then seen_name[name] = true; names[#names + 1] = name end
-    if not seen_segment[segment] then seen_segment[segment] = true; segments[#segments + 1] = segment end
+    for _, segment in ipairs(node_segments) do
+      if not seen_segment[segment] then seen_segment[segment] = true; segments[#segments + 1] = segment end
+    end
     for ext in pairs(adapter.extensions) do
       if not seen_globs[ext] then
         seen_globs[ext] = true
@@ -284,12 +300,15 @@ local function candidate_files(ctx, nodes)
 
   local result = {}
   for _, node in ipairs(nodes) do
-    local name, segment = node.search[1], node.search[2]
+    local name, node_segments = node.search[1], node.search[2]
     local paths = { node.path }
     local adapter = adapter_for(node.path)
     for path in pairs(by_name[name] or {}) do
-      if path ~= node.path and (by_segment[segment] or {})[path]
-        and (ctx.opts.tests or not adapter.is_test(path)) then
+      local has_segment = false
+      for _, segment in ipairs(node_segments) do
+        if (by_segment[segment] or {})[path] then has_segment = true break end
+      end
+      if path ~= node.path and has_segment and (ctx.opts.tests or not adapter.is_test(path)) then
         paths[#paths + 1] = path
       end
     end
@@ -303,7 +322,7 @@ local function ensure_caller(ctx, file, from_key)
   if ctx.nodes[from_key] then return ctx.nodes[from_key] end
   for _, def in ipairs(file.defs) do
     if def.key == from_key then
-      local node = node_from_def(def, file.path, "context")
+      local node = node_from_def(def, file.path, "context", ctx)
       ctx.nodes[from_key] = node
       return node
     end
@@ -594,6 +613,26 @@ function M.build(args)
     nodes = {}, changed = {}, removed = {}, other = {}, tests = {}, outside = {}, callers = {},
     search_cache = {}, stats = { files = 0, visited = 0, truncated = false },
   }
+  -- Modules declaring @callback, found once: files with the marker, parsed.
+  local callback_modules = nil
+  function ctx.callback_modules()
+    if callback_modules then return callback_modules end
+    callback_modules = {}
+    for _, adapter in ipairs(ADAPTERS) do
+      if adapter.callback_marker and adapter.available() then
+        local cmd = { "rg", "-l", "-F" }
+        for ext in pairs(adapter.extensions) do vim.list_extend(cmd, { "-g", "*." .. ext }) end
+        vim.list_extend(cmd, { "--", adapter.callback_marker })
+        vim.list_extend(cmd, ctx.search_roots)
+        local _, out = run(cmd, ctx.root)
+        for path in out:gmatch("[^\n]+") do
+          local file = analyze_file(ctx.root, (path:gsub("^%./", "")))
+          for module in pairs((file or {}).callbacks or {}) do callback_modules[module] = true end
+        end
+      end
+    end
+    return callback_modules
+  end
   local started = vim.uv.hrtime()
   changed_functions(ctx)
   walk_callers(ctx)

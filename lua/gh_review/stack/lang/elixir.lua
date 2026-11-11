@@ -8,8 +8,15 @@
 --          {Module, :fun, args} triple); module is nil for unqualified calls,
 --          which resolve against `scope` (the enclosing module) or its imports.
 --          `from` is the key of the enclosing def or pseudo frame.
+--          kind "dispatch" is a call through a variable or expression
+--          (`tool.run(input)`, `Sport.module!(s).keys()`): it reaches the
+--          callbacks of modules that implement a behaviour.
 --   frames: pseudo frames for calls outside any def: ExUnit tests and module bodies.
 --   imports: { [module] = { imported module, ... } }
+--   Each def also carries `behaviours` (what its module declares with
+--   @behaviour) and `uses` (what it pulls in with `use`, which counts as a
+--   behaviour only when that module declares @callbacks; see M.callback_modules).
+--   callbacks: { [module] = true } for modules declaring @callback.
 
 local M = {}
 
@@ -102,6 +109,20 @@ function M.analyze(source)
   local root = parser:parse()[1]:root()
 
   local defs, by_key, calls, frames, imports = {}, {}, {}, {}, {}
+  -- Behaviours each module implements: @behaviour B, or `use B` (which is how
+  -- a behaviour like Sport sets itself up).
+  local behaviours, uses, callbacks = {}, {}, {}
+  -- Modules this file names as values (`{:vertex, Format.Gemini} -> ...`),
+  -- which a dispatch in the file may be calling.
+  local module_refs = {}
+  local function add_behaviour(module, behaviour)
+    if not module or not behaviour then return end
+    behaviours[module] = behaviours[module] or {}
+    for _, b in ipairs(behaviours[module]) do
+      if b == behaviour then return end
+    end
+    table.insert(behaviours[module], behaviour)
+  end
 
   local function add_call(ctx, call)
     call.scope = ctx.module
@@ -236,6 +257,14 @@ function M.analyze(source)
             if full then ctx.aliases[as_name or full:match("[^.]+$")] = full end
           end
           return
+        elseif word == "use" and args then
+          local first = named_children(args)[1]
+          local used = first and resolve_module(first, source, ctx)
+          if used and ctx.module then
+            uses[ctx.module] = uses[ctx.module] or {}
+            table.insert(uses[ctx.module], used)
+          end
+          return
         elseif word == "import" and args then
           local first = named_children(args)[1]
           local full = first and resolve_module(first, source, ctx)
@@ -260,11 +289,19 @@ function M.analyze(source)
         local fun = parts[#parts]
         if #parts == 2 and fun:type() == "identifier" then
           local module = resolve_module(parts[1], source, ctx)
+          local arity = arg_count(node) + (piped(node, source) and 1 or 0)
           if module then
-            add_call(ctx, { module = module, name = text(fun, source),
-              arity = arg_count(node) + (piped(node, source) and 1 or 0),
+            add_call(ctx, { module = module, name = text(fun, source), arity = arity,
               line = node:start() + 1, kind = "remote" })
+          elseif child_of_type(node, "arguments") then
+            -- Called on a variable or expression, with parentheses: a dispatch
+            -- to whatever module that value is. Without parentheses
+            -- (`opts.field`) it is map access, not a call.
+            add_call(ctx, { name = text(fun, source), arity = arity, line = node:start() + 1,
+              kind = "dispatch" })
           end
+          -- The receiver may itself contain calls: `Sport.module!(s).keys()`.
+          if parts[1]:type() == "call" then walk(parts[1], ctx) end
         end
       end
 
@@ -301,18 +338,50 @@ function M.analyze(source)
       end
     end
 
+    if kind == "unary_operator" and operator(node, source) == "@" then
+      local attr = named_children(node)[1]
+      local ident = attr and attr:type() == "call" and child_of_type(attr, "identifier")
+      if ident and text(ident, source) == "callback" and ctx.module then
+        callbacks[ctx.module] = true
+        return
+      end
+      if ident and text(ident, source) == "behaviour" then
+        local args = child_of_type(attr, "arguments")
+        local first = args and named_children(args)[1]
+        add_behaviour(ctx.module, first and resolve_module(first, source, ctx))
+        return
+      end
+    end
+
+    -- An alias reached here is a value, not a call target or a directive.
+    if kind == "alias" then
+      local module = resolve_module(node, source, ctx)
+      if module then module_refs[module] = true end
+      return
+    end
+
     if kind == "tuple" then scan_triples(node, ctx) end
     walk_children(node, ctx)
   end
 
   walk(root, { module = nil, aliases = {}, frame = nil })
-  return { defs = defs, calls = calls, frames = frames, imports = imports }
+  for _, def in ipairs(defs) do
+    def.behaviours = behaviours[def.module] or {}
+    def.uses = uses[def.module] or {}
+  end
+  return { defs = defs, calls = calls, frames = frames, imports = imports, behaviours = behaviours,
+    module_refs = module_refs, callbacks = callbacks }
 end
 
 -- Does `call` (from an analyzed file) reach `def`?
 function M.reaches(call, def, file)
   if call.name ~= def.name or call.arity < def.min_arity or call.arity > def.max_arity then
     return false
+  end
+  -- A dispatch reaches the public functions of modules implementing a
+  -- behaviour, or of modules the calling file names as values.
+  if call.kind == "dispatch" then
+    return def.public and (#(def.behaviours or {}) > 0 or (file.module_refs or {})[def.module] == true)
   end
   if call.module then return call.module == def.module end
   if call.scope == def.module then return true end
@@ -326,9 +395,18 @@ function M.is_test(path)
   return path:find("/test/") ~= nil or path:find("_test%.exs$") ~= nil or path:find("^test/") ~= nil
 end
 
--- What a candidate caller file must contain: the name and the module's last segment.
+-- The `rg` search that finds files declaring callbacks, for M.callback_modules.
+M.callback_marker = "@callback"
+
+-- What a candidate caller file must contain: the name and the module's last
+-- segment, or for a behaviour callback the last segment of a behaviour (code
+-- that dispatches to tools names Tool, not each tool).
 function M.search_terms(def)
-  return def.name, def.module:match("[^.]+$")
+  local segments = { def.module:match("[^.]+$") }
+  for _, b in ipairs(def.behaviours or {}) do
+    segments[#segments + 1] = b:match("[^.]+$")
+  end
+  return def.name, segments
 end
 
 local CALLBACKS = {

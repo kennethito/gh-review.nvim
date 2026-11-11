@@ -138,7 +138,7 @@ function M.render()
   end
   if not current.result then
     add(string.format("Stacks: building… %d files", current.progress), nil)
-    add("+ new  ~ changed  - removed  ⇢ async  ◆ data  ⚠ also entered elsewhere", nil, "Comment")
+    add("+ new  ~ changed  - removed  ⇢ async  ⇉ via behaviour  ◆ data  ⚠ also entered elsewhere", nil, "Comment")
     return lines, items, hls
   end
 
@@ -150,7 +150,7 @@ function M.render()
   add(string.format("Stacks: %d entr%s · %d changed fns · %d ms%s", groups, groups == 1 and "y" or "ies",
     #result.changed, result.stats.ms,
     result.stats.truncated and " · frame limit hit, some callers not walked" or ""), nil)
-  add("+ new  ~ changed  - removed  ⇢ async  ◆ data  ⚠ also entered elsewhere", nil, "Comment")
+  add("+ new  ~ changed  - removed  ⇢ async  ⇉ via behaviour  ◆ data  ⚠ also entered elsewhere", nil, "Comment")
 
   local keys_by_node = data_keys(result)
   local first_row = {}
@@ -163,7 +163,8 @@ function M.render()
       if #row.roots > 1 then
         label = string.format("%s  (+%d more entries)", label, #row.roots - 1)
       end
-      local text = string.format("▾ %s  %s", label, short_path(row.node.path, row.node.line))
+      local text = string.format("%s▾ %s  %s", string.rep("  ", row.depth or 0), label,
+        short_path(row.node.path, row.node.line))
       -- A root where the climb stopped is not a real entry point.
       if row.truncated then text = text .. "  ↑ climb stopped here" end
       add(text, item, "GHReviewStackEntry")
@@ -175,10 +176,12 @@ function M.render()
     else
       local node = row.node
       local indent = string.rep("  ", row.depth)
-      local prefix = (row.edge == "dynamic" and "⇢" or STATUS_MARK[node.status] or " ") .. " "
+      local edge_mark = row.edge == "dynamic" and "⇢" or row.edge == "dispatch" and "⇉" or nil
+      local prefix = (edge_mark or STATUS_MARK[node.status] or " ") .. " "
       local text = indent .. prefix .. (row.ref and "↪ " or "") .. rows_mod.frame_label(node)
         .. "  " .. short_path(node.path, node.jump_line or node.line)
       local notes = {}
+      if row.edge == "dispatch" then notes[#notes + 1] = { rows_mod.via(node), "GHReviewStackDynamic" } end
       if node.shared then notes[#notes + 1] = { string.format("⚠ %d", node.shared), "GHReviewStackShared" } end
       local keys = vim.tbl_keys(keys_by_node[node.key] or {})
       table.sort(keys)
@@ -199,7 +202,7 @@ function M.render()
       end
       item.target = row.ref and first_row[node.key] or nil
       add(text, item, row.ref and "GHReviewStackContext" or STATUS_HL[node.status])
-      if row.edge == "dynamic" then mark(#indent, #indent + #"⇢", "GHReviewStackDynamic") end
+      if edge_mark then mark(#indent, #indent + #edge_mark, "GHReviewStackDynamic") end
       for _, s in ipairs(starts) do mark(s[1], s[2], s[3]) end
     end
   end
@@ -263,16 +266,21 @@ function M.place_notes(path, bufnr)
     if node.path == path and node.kind == "def" and node.line <= line_count then
       local parts = {}
       local callers = result.callers[key] or {}
-      local dynamic, total = {}, 0
+      local dynamic, dispatch, total = {}, {}, 0
       for caller_key, edge in pairs(callers) do
         total = total + 1
-        if edge.kind == "dynamic" then
-          local caller = result.nodes[caller_key]
-          dynamic[#dynamic + 1] = caller and caller.name or caller_key
-        end
+        local caller = result.nodes[caller_key]
+        local caller_name = caller and caller.name or caller_key
+        if edge.kind == "dynamic" then dynamic[#dynamic + 1] = caller_name end
+        if edge.kind == "dispatch" then dispatch[#dispatch + 1] = caller_name end
       end
       table.sort(dynamic)
+      table.sort(dispatch)
       if #dynamic > 0 then parts[#parts + 1] = { "⇢ async from " .. table.concat(dynamic, ", "), "GHReviewStackDynamic" } end
+      if #dispatch > 0 then
+        parts[#parts + 1] = { string.format("⇉ %s from %s", rows_mod.via(node), table.concat(dispatch, ", ")),
+          "GHReviewStackDynamic" }
+      end
       if node.shared then
         parts[#parts + 1] = { string.format("⚠ also entered from %d other entr%s", node.shared,
           node.shared == 1 and "y" or "ies"), "GHReviewStackShared" }

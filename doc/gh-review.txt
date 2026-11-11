@@ -545,6 +545,8 @@ code in the background.  Rows read: >
     +  new function           ~  changed           -  removed
     ⇢  called asynchronously: :timer.apply_after, apply/3, or a
        {Module, :fun, args} tuple (RPC casts, scheduled jobs)
+    ⇉  called through a variable: a behaviour's implementation ("via
+       Tool"), or a module the calling file names as a value
     ↪  drawn above; <CR> jumps there
     ⚠  N other entry points reach this function: existing callers of
        code the change modified (only the frame where they cross in)

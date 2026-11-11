@@ -235,12 +235,13 @@ Press `s` in the files list to see the change as call stacks instead of files: o
       + Data.Action.GameStatus.Runner.notification_score/1  runner.ex:65
 ```
 
-- `+` new, `~` changed, `-` removed; `⇢` a call made asynchronously (`:timer.apply_after`, `apply/3`, `{Module, :fun, args}` tuples such as RPC casts and scheduled jobs).
+- `+` new, `~` changed, `-` removed; `⇢` a call made asynchronously (`:timer.apply_after`, `apply/3`, `{Module, :fun, args}` tuples such as RPC casts and scheduled jobs); `⇉` a call through a variable (`tool.run(input, ctx)`) reaching a behaviour's implementations (`via Tool`) or a module the calling file names as a value (`via a module value`).
 - Entry points that converge on the same code fold into one line (`+4 more entries`). A function reached twice is drawn once; later rows say `↪ … (see above)`.
 - `⚠ N`: an entry point outside the change also reaches this function: existing callers of code the change modified. Only the frame where they cross in is marked.
 - `◆ key`: a string key written by one changed function and read by another, in another file (heuristic, from added lines only).
 - `<CR>` opens any function: changed code (and anything else in a changed file) as a diff at the function, a removed function on the base side, and a function in an unchanged file as the plain file at that line; `]s` / `[s` in the diff step through the changed functions in stack order; `<Tab>` folds an entry group; the diff shows the same marks as virtual text.
 - `P` moves the files list between the bottom and the left.
+- After the change's own entry points come: changed functions with no callers found; other entry points into changed code, one row per place they cross in with the entries under it; compile-time module bodies; code reached only from tests.
 
 The view needs the working tree to be the reviewed head: local scopes, or a PR opened with a checkout. Elixir is supported (needs the `elixir` tree-sitter parser). Lua support is basic: it follows `require`d modules and the file's returned table, but not functions passed around in tables (keymaps, callbacks), so callback-heavy Lua shows many entry points. Other files are listed under "Other changed files". Callers in test files are left out unless `stack.tests = true`, and the climb above changed code stops after `stack.max_context_hops` unchanged functions, so widely used helpers don't drag in the whole codebase.
 

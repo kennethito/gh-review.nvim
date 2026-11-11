@@ -438,6 +438,12 @@ Each adapter is chosen by extension and provides:
 - `reaches(call, def, analysis)`, `search_terms(def)`, `is_test(path)`, `entry_label(def)`,
   `data_keys(line)`.
 
+Dispatch: `var.fun(args)` and `expr.fun(args)` (with parentheses; `opts.field` is map access) are calls of
+kind `dispatch`. They reach public functions of modules that declare `@behaviour B`, or `use B` where `B`
+declares `@callback` (found once per build: `rg -l @callback`, then those files parsed; a plain
+`use Core.Logger` is not a behaviour), or modules the calling file names as values. Candidate caller files
+for a callback are those containing its name and either its module's or a behaviour's last segment.
+
 Elixir specifics: guarded heads (`when`), `, do:` bodies, nested modules named under their parent and
 auto-aliased, `alias A.{B, C}`, `as:`, partial aliases (`BigPlay.NFL.f` after `alias X.BigPlay`),
 `__MODULE__` chains, pipes (+1 arity), captures (`&f/1`, `&M.f/2`). Comment nodes are skipped
@@ -458,7 +464,11 @@ everywhere, since tree-sitter keeps them as named children inside pipelines and 
 4. The feature: groups taken greedily by the amount of changed code they reach; a group joins unless
    half of its changed frames are already covered. Other groups are entry points into that code.
    `shared` marks the frame where such a group first enters the feature.
-5. Data edges: string keys written in added lines of one changed function and read in added lines of
+5. Sections (`rows.lua`): the feature's groups first; changed functions with no callers found; other
+   entry points, summed up per crossing frame with each entry's own path below it; compile-time module
+   bodies (a body that only captures functions, like Absinthe's `resolve &R.f/2`, is runtime wiring and
+   stays with the entries); code reached only from tests.
+6. Data edges: string keys written in added lines of one changed function and read in added lines of
    another, in another file, and containing `_`.
 
 Measured on sleeperbot #19778 (2,789 `.ex` files): 108 changed functions, 146 frames, 125 files
