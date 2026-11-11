@@ -12,7 +12,18 @@ local store_path = nil
 local data = nil
 
 local function empty()
-  return { version = 1, next_id = 1, threads = {}, viewed = {} }
+  -- replies: draft replies to existing GitHub threads (PR drafts).
+  return { version = 1, next_id = 1, threads = {}, viewed = {}, replies = {} }
+end
+
+-- Where PR drafts are kept; nil means Neovim's data directory. Tests point it
+-- at a temp dir.
+M.drafts_dir = nil
+
+-- A PR's drafts live outside the repo, so they work without a checkout.
+function M.path_for_pr(host, owner, name, number)
+  local dir = M.drafts_dir or (vim.fn.stdpath("data") .. "/gh-review/drafts")
+  return string.format("%s/%s/%s/%s/%d.json", dir, host, owner, name, number)
 end
 
 function M.path_for(root, branch)
@@ -160,6 +171,64 @@ function M.mark_sent(thread_ids)
     end
   end
   M.save()
+end
+
+-- A draft reply to a GitHub thread. first_comment_id is what the reply
+-- mutation takes as inReplyTo.
+function M.add_reply(thread_id, first_comment_id, body)
+  local reply = new_comment(body)
+  reply.thread_id = thread_id
+  reply.first_comment_id = first_comment_id
+  data.replies[#data.replies + 1] = reply
+  M.save()
+  return reply
+end
+
+function M.replies()
+  return data and data.replies or {}
+end
+
+function M.threads()
+  return data and data.threads or {}
+end
+
+function M.remove_thread(id)
+  for i, t in ipairs(data.threads) do
+    if t.id == id then
+      table.remove(data.threads, i)
+      break
+    end
+  end
+  M.save()
+end
+
+function M.remove_reply(id)
+  for i, r in ipairs(data.replies) do
+    if r.id == id then
+      table.remove(data.replies, i)
+      break
+    end
+  end
+  M.save()
+end
+
+-- PR drafts not yet published: unresolved draft threads and draft replies.
+function M.draft_count()
+  if not data then return 0 end
+  local n = #data.replies
+  for _, t in ipairs(data.threads) do
+    if not t.isResolved then n = n + 1 end
+  end
+  return n
+end
+
+function M.clear_drafts()
+  data.threads, data.replies = {}, {}
+  M.save()
+end
+
+function M.is_loaded()
+  return data ~= nil
 end
 
 -- Drop every unsent comment, and threads left with none.

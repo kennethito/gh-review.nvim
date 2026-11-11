@@ -16,6 +16,7 @@ CONTENTS                                                  *gh-review-contents*
    11. Configuration ................ |gh-review-config|
    12. Local Scopes ................. |gh-review-scopes|
    13. Stack View ................... |gh-review-stack|
+   14. Unified View ................. |gh-review-unified|
 
 ==============================================================================
 1. Introduction                                       *gh-review-introduction*
@@ -139,6 +140,21 @@ A quick-start sequence for either workflow: >
                                                             *:GHReviewDiscard*
 :GHReviewDiscard        Discard the pending review.  Prompts for confirmation,
                         then deletes the review and all its pending comments.
+
+                                                               *:GHReviewHelp*
+:GHReviewHelp           Show every configured key and command in a float
+                        (also `?` in the files list, `g?` in the diff and
+                        the comment buffer).
+
+PR DRAFTS ~
+                                                         *gh-review-drafts*
+
+On a PR, `:w` / <C-s> in the comment buffer saves the comment or reply as a
+draft on this machine (`stdpath("data")/gh-review/drafts/`), not on GitHub.
+|:GHReviewSubmit| publishes all drafts as one review (Comment, Approve,
+Request changes) or uploads them to a pending review without publishing.
+|:GHReviewDiscard| deletes them.  `pr_drafts = false` posts each comment when
+written instead.
 
                                                               *:GHReviewClose*
 :GHReviewClose          Close all review buffers and reset plugin state.
@@ -395,6 +411,10 @@ Defaults, by surface: >lua
       scope_turn        = false,
       next_frame        = "]s",
       prev_frame        = "[s",
+      help              = "g?",
+      toggle_view       = "gu",
+      next_hunk         = "]c",
+      prev_hunk         = "[c",
     },
     files = {
       open          = "<CR>",
@@ -411,12 +431,14 @@ Defaults, by surface: >lua
       toggle_fold       = "<Tab>",
       toggle_position   = "P",
       help              = "?",
+      toggle_view       = "gu",
     },
     thread = {
       submit       = "<C-s>",
       resolve      = "<C-r>",
       close        = "q",
       close_insert = "<C-q>",
+      help         = "g?",
     },
 <
 `comment` and `suggestion` each bind both normal and visual mode.  `submit`
@@ -460,6 +482,11 @@ STACK AND LAYOUT ~
       max_frames = 400,        functions visited before giving up
       max_context_hops = 3,    unchanged functions climbed above changes
     },
+    pr_drafts = true,          keep PR comments local (|gh-review-drafts|)
+    diff_view = "split",       or "unified" (|gh-review-unified|)
+    diff_inline = "word",      mark changed words in a line; "char" or "off".
+                               Side by side this sets 'diffopt' inline:word
+                               (Neovim 0.12+) while a review diff is open.
     files_position = "bottom", or "left"
     files_size = { bottom = 12, left = 50 },
 
@@ -547,6 +574,25 @@ Languages: Elixir (the `elixir` tree-sitter parser), and basic Lua: required
 modules and the file's returned table, but not functions passed through
 tables (keymaps, callbacks).  Files in other languages are listed under
 "Other changed files".
+
+==============================================================================
+14. Unified View                                         *gh-review-unified*
+
+`gu` in the diff or the files list switches between side-by-side and
+unified, keeping the file and line.  `diff_view = "unified"` makes unified
+the default.
+
+The unified view is one window on the head file itself: LSP, go-to-
+definition and editing work as usual.  Added and changed lines are
+highlighted (DiffAdd, with the changed characters in DiffText), removed
+lines are drawn as virtual lines (DiffDelete) above where they were, and
+unchanged stretches fold with three lines of context.  `]c` and `[c` jump
+between changes.
+
+The base file is loaded but not shown.  `gc` on a line with removed lines
+drawn above it asks whether to comment on the line or on the removed lines;
+base-side threads show on the head line their code maps to, marked
+"(base)".
 
 ==============================================================================
  vim:tw=78:ts=8:ft=help:norl:

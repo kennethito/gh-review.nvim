@@ -66,4 +66,58 @@ h.run_test("? toggles the help", function()
   h.assert_false(help.is_open())
 end)
 
+h.run_test("The diff and comment buffer map g? to the help", function()
+  local text = table.concat(help.lines(), "\n")
+  local diff_section = text:match("\nDiff\n(.-)\n\n")
+  local thread_section = text:match("\nComment buffer\n(.-)\n\n")
+  h.assert_match("g%?%s+Show keys and commands", diff_section)
+  h.assert_match("g%?%s+Show keys and commands", thread_section)
+  h.assert_match(":GHReviewHelp%s+Show every key and command", text)
+end)
+
+h.run_test(":GHReviewHelp opens the help and q returns to the window it came from", function()
+  local from = vim.api.nvim_get_current_win()
+  vim.cmd("GHReviewHelp")
+  h.assert_true(help.is_open())
+  press("q")
+  h.assert_false(help.is_open())
+  h.assert_equal(from, vim.api.nvim_get_current_win())
+end)
+
+h.run_test("Help opened from a folding window shows every line", function()
+  vim.cmd("new")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "a", "  b", "  c" })
+  -- Like LazyVim: indent folding set globally, here with every fold closed.
+  vim.o.foldmethod = "indent"
+  vim.o.foldlevel = 0
+  vim.o.foldenable = true
+  vim.o.shiftwidth = 2  -- indent folds count shiftwidths; the entries are indented 2
+  help.open()
+  -- Headless Neovim computes folds lazily: recompute them now.
+  vim.cmd("silent! normal! zx")
+  local count = vim.api.nvim_buf_line_count(0)
+  local folded = 0
+  for lnum = 1, count do
+    if vim.fn.foldclosed(lnum) ~= -1 then folded = folded + 1 end
+  end
+  h.assert_equal(0, folded, "no folded lines")
+  h.assert_true(count > 20, "every entry listed")
+  help.close()
+  vim.cmd("bwipeout!")
+  vim.o.foldmethod, vim.o.foldlevel, vim.o.shiftwidth = "manual", 0, 8
+end)
+
+h.run_test("The comment buffer opened from a folding window shows every line", function()
+  vim.o.foldmethod, vim.o.foldlevel, vim.o.foldenable, vim.o.shiftwidth = "indent", 0, true, 2
+  require("gh_review.thread").open_new("src/new_file.ts", 1, 3, "RIGHT", "  indented\n    more")
+  vim.cmd("silent! normal! zx")
+  local folded = 0
+  for lnum = 1, vim.api.nvim_buf_line_count(0) do
+    if vim.fn.foldclosed(lnum) ~= -1 then folded = folded + 1 end
+  end
+  h.assert_equal(0, folded)
+  require("gh_review.thread").close_thread_buffer()
+  vim.o.foldmethod, vim.o.foldlevel, vim.o.shiftwidth = "manual", 0, 8
+end)
+
 h.write_results("/tmp/gh_review_test_help.txt")

@@ -42,6 +42,26 @@ h.run_test("Snapshot includes untracked files and leaves the index alone", funct
   repo.git(dir, { "reset", "-q", "a.txt" })
 end)
 
+h.run_test("Snapshot sees a same-size edit made in the second the index was written", function()
+  -- Git trusts its cached stat for files older than the index, comparing
+  -- whole seconds. Commit and edit early in one second, snapshot in the next:
+  -- the copied index must keep the original's timestamp for git to recheck.
+  local r = vim.fn.resolve(vim.fn.tempname())
+  vim.fn.mkdir(r, "p")
+  repo.git(r, { "init", "-q" })
+  repo.git(r, { "config", "user.email", "t@example.com" })
+  repo.git(r, { "config", "user.name", "T" })
+  vim.wait(1000, function() return vim.uv.clock_gettime("realtime").nsec < 2e8 end, 5)
+  repo.write(r, "f.txt", { "aaaa" })
+  repo.git(r, { "add", "-A" })
+  repo.git(r, { "commit", "-q", "-m", "x" })
+  repo.write(r, "f.txt", { "bbbb" })
+  local second = os.time()
+  vim.wait(2000, function() return os.time() > second end, 10)
+  local tree = local_git.snapshot(r)
+  h.assert_equal("bbbb", repo.git(r, { "show", tree .. ":f.txt" }))
+end)
+
 h.run_test("Member statuses: agents whose cwd is inside this worktree", function()
   vim.fn.mkdir(dir .. "/sub", "p")
   local other = vim.fn.resolve(vim.fn.tempname())

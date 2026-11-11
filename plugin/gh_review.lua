@@ -55,6 +55,10 @@ vim.api.nvim_create_user_command("GHReviewDiscard", function()
   require("gh_review").discard_review()
 end, { nargs = 0, desc = "Discard the pending review, or unsent local comments" })
 
+vim.api.nvim_create_user_command("GHReviewHelp", function()
+  require("gh_review.help").open()
+end, { nargs = 0, desc = "Show every key and command" })
+
 vim.api.nvim_create_user_command("GHReviewClose", function()
   require("gh_review").close()
 end, { nargs = 0, desc = "Close the review" })
@@ -87,7 +91,9 @@ vim.api.nvim_create_autocmd("OptionSet", {
     local fold = require("gh_review.config").options.fold
     if not fold.enabled then return end
     local bufnr = vim.api.nvim_get_current_buf()
-    if vim.b[bufnr].gh_review_diff and vim.wo.foldmethod ~= "diff" then
+    -- Only a window in diff mode: the unified view folds the head file
+    -- manually, and forcing diff folding there folds the whole file away.
+    if vim.b[bufnr].gh_review_diff and vim.wo.diff and vim.wo.foldmethod ~= "diff" then
       vim.cmd(string.format("noautocmd setlocal foldmethod=diff foldlevel=%d", fold.level))
     end
   end,
@@ -98,7 +104,7 @@ vim.api.nvim_create_autocmd("OptionSet", {
   callback = function()
     if not require("gh_review.config").options.fold.enabled then return end
     local bufnr = vim.api.nvim_get_current_buf()
-    if vim.b[bufnr].gh_review_diff and not vim.wo.foldenable then
+    if vim.b[bufnr].gh_review_diff and vim.wo.diff and not vim.wo.foldenable then
       vim.cmd("noautocmd setlocal foldenable")
     end
   end,

@@ -24,7 +24,8 @@ end
 local function reply_separator()
   local km = config.options.keymaps.thread
   local hints = {}
-  for _, pair in ipairs({ { km.submit, "submit" }, { km.resolve, "resolve" },
+  local submit_label = require("gh_review.pr_drafts").enabled() and "save draft" or "submit"
+  for _, pair in ipairs({ { km.submit, submit_label }, { km.resolve, "resolve" },
                           { km.close_insert, "cancel" } }) do
     if type(pair[1]) == "string" then
       hints[#hints + 1] = string.format("%s to %s", key_hint(pair[1]), pair[2])
@@ -101,9 +102,14 @@ local function submit_local_thread(body, path, line_num, start_line, side)
     anchor_total = line_num - first + 1,
     left_base = side == "LEFT" and state.get_merge_base_oid() or nil,
   }, body)
-  state.set_thread(t.id, t)
-  require("gh_review.diff").refresh_signs()
-  print("Comment saved")
+  if state.is_local_mode() then
+    state.set_thread(t.id, t)
+    require("gh_review.diff").refresh_signs()
+    print("Comment saved")
+  else
+    require("gh_review.pr_drafts").refresh()
+    print("Draft saved: :GHReviewSubmit publishes your drafts")
+  end
   M.close_thread_buffer()
 end
 
@@ -113,7 +119,8 @@ local function submit_new_thread(body, bufnr)
   local start_line = vim.b[bufnr].gh_review_start_line
   local side = vim.b[bufnr].gh_review_side or "RIGHT"
 
-  if state.is_local_mode() then
+  -- Local scopes and PR drafts both keep the comment on this machine.
+  if state.is_local_mode() or require("gh_review.pr_drafts").enabled() then
     submit_local_thread(body, path, line_num, start_line, side)
     return
   end
@@ -250,6 +257,17 @@ local function submit_reply()
       print("Reply saved")
       M.close_thread_buffer()
     end
+  elseif require("gh_review.pr_drafts").enabled() then
+    local drafts = require("gh_review.pr_drafts")
+    local store = require("gh_review.local_store")
+    if drafts.is_draft_thread(thread_id) then
+      store.reply(thread_id, body)
+    else
+      store.add_reply(thread_id, vim.b[bufnr].gh_review_first_comment_id or "", body)
+    end
+    drafts.refresh()
+    print("Draft reply saved: :GHReviewSubmit publishes your drafts")
+    M.close_thread_buffer()
   elseif state.is_review_active() then
     submit_review_reply(body, bufnr)
   else
@@ -278,6 +296,14 @@ local function toggle_resolve()
       print(is_resolved and "Thread unresolved" or "Thread resolved")
       M.close_thread_buffer()
     end
+    return
+  end
+  -- A draft thread exists only here: resolving it leaves it out of publishing.
+  if require("gh_review.pr_drafts").is_draft_thread(thread_id) then
+    require("gh_review.local_store").set_resolved(thread_id, not is_resolved)
+    require("gh_review.pr_drafts").refresh()
+    print(is_resolved and "Draft unresolved" or "Draft resolved (won't be published)")
+    M.close_thread_buffer()
     return
   end
 
@@ -327,6 +353,7 @@ local ACTIONS = {
     { "n", function() M.close_thread_buffer() end, "Close thread" },
     { "i", function() vim.cmd("stopinsert") M.close_thread_buffer() end, "Close thread" },
   },
+  help = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },
 }
 
 function M.omnifunc(findstart, base)
@@ -445,6 +472,7 @@ local function show_thread(t)
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].filetype = "gh-review-thread"
   local winid = vim.fn.win_getid()
+  win.no_folds(winid)
   vim.wo[winid].signcolumn = "no"
   vim.wo[winid].wrap = true
   vim.wo[winid].winfixheight = true

@@ -19,4 +19,15 @@ function M.close_current()
   end
 end
 
+-- Turn folding off in a window that shows the plugin's own text (help, thread
+-- preview, comment buffer). A new window inherits folding from the one it
+-- opened from: a code window's indent or expr folding (LazyVim sets indent
+-- folding globally) would fold every indented line away. Switching to manual
+-- keeps the folds already made, so they are deleted as well.
+function M.no_folds(winid)
+  vim.wo[winid].foldmethod = "manual"
+  vim.api.nvim_win_call(winid, function() vim.cmd("silent! normal! zE") end)
+  vim.wo[winid].foldenable = false
+end
+
 return M

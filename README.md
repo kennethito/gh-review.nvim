@@ -62,6 +62,9 @@ require("gh_review").setup({
     max_frames = 400,
     max_context_hops = 3,    -- unchanged functions climbed above changed code
   },
+  pr_drafts = true,          -- keep PR comments local until :GHReviewSubmit
+  diff_view = "split",       -- or "unified"
+  diff_inline = "word",      -- mark changed words in a line: "word", "char", or "off"
   files_position = "bottom", -- or "left"
   files_size = { bottom = 12, left = 50 },
   keymaps = {
@@ -83,6 +86,10 @@ require("gh_review").setup({
       scope_turn        = false,
       next_frame        = "]s",
       prev_frame        = "[s",
+      help              = "g?",   -- the head pane is your file: ? stays search
+      toggle_view       = "gu",
+      next_hunk         = "]c",
+      prev_hunk         = "[c",
     },
     files = {
       open          = "<CR>",
@@ -99,6 +106,7 @@ require("gh_review").setup({
       toggle_fold       = "<Tab>",
       toggle_position   = "P",
       help              = "?",
+      toggle_view       = "gu",
     },
     thread = {
       submit       = "<C-s>",
@@ -179,6 +187,14 @@ GitHub Enterprise hosts work in both workflows: The plugin sends its API request
 
 A PR number refers to a PR in the clone’s base repo — the same repo `gh pr list` and `gh pr view` use. That’s the remote that `gh repo set-default` chose, if any; otherwise `upstream`, `github`, or `origin`, in that order. So in a clone of a fork, PR numbers refer to the parent repo’s PRs.
 
+### Drafts: nothing reaches GitHub until you publish
+
+On a PR, writing a comment or reply (`:w` or `<C-s>` in the comment buffer) saves it as a **draft on this machine**, under Neovim's data directory (`stdpath("data")/gh-review/drafts/`). Drafts show as pending (`CP`), survive restarts, and work with or without a checkout. Nothing is sent to GitHub, and nobody is notified.
+
+`:GHReviewSubmit` publishes every draft as one review: Comment, Approve, or Request changes, with an optional summary. It can instead upload them to a pending review on GitHub without publishing (visible only to you, like GitHub's "Start a review"). If publishing stops part way, the drafts not yet on GitHub stay drafts and `:GHReviewSubmit` retries. `:GHReviewDiscard` deletes the drafts; resolving a draft thread keeps it out of publishing.
+
+Set `pr_drafts = false` to post each comment when you write it, as upstream gh-review does.
+
 ### Local scopes (no PR)
 
 Review your own working tree, or an agent's changes, the same way: no PR and no `gh` needed.
@@ -199,6 +215,14 @@ Review your own working tree, or an agent's changes, the same way: no PR and no 
 - In PR scope, `:GHReviewSend` sends every unresolved thread (the whole conversation) the same way, and leaves GitHub as it is. `:GHReviewCopy` copies instead of sending.
 
 **Last turn.** Inside herdr, gh-review watches the agents in the worktree while Neovim runs and snapshots the worktree when they start working (`refs/worktree/gh-review/turn-base`); when the turn ends, an open turn review refreshes. Otherwise it uses the newest baseline left by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr) or reviewr.nvim, or one you mark yourself with `:GHReviewTurn` before prompting.
+
+### Unified view
+
+`gu` (in the diff or the files list) switches between side-by-side and unified, keeping the file and line; `diff_view = "unified"` makes it the default.
+
+The unified view is one window on the head file itself, so LSP, go-to-definition, and editing work as usual. Added and changed lines are highlighted (the changed characters too), removed lines are drawn above where they were (they are not part of the file), and unchanged stretches fold with three lines of context. `]c` / `[c` jump between changes. `gc` on a line with removed lines above it asks whether to comment on that line or on the removed lines (the base side); base-side comments show on the head line their code maps to, marked `(base)`.
+
+Inside a changed line, the changed **words** are marked in both views (`diff_inline = "word"`; `"char"` marks characters, `"off"` neither). Side by side this is Neovim's `diffopt` `inline:word` (Neovim 0.12+), set while a review diff is open and restored when it closes.
 
 ### Stack view
 
@@ -248,6 +272,7 @@ gF                      Jump to the file with LSP (checkout only)
 | `:GHReviewSend`    | Send comments to a running coding agent                       |
 | `:GHReviewCopy`    | Copy the comments `:GHReviewSend` would send                  |
 | `:GHReviewTurn`    | Mark the last-turn baseline now                               |
+| `:GHReviewHelp`    | Show every key and command (`?` in the files list, `g?` in the diff) |
 
 ## Files list mappings
 
@@ -264,6 +289,7 @@ gF                      Jump to the file with LSP (checkout only)
 | `<Tab>`   | Fold or unfold an entry group (stack view) |
 | `P`       | Move the list between the bottom and the left |
 | `?`       | Show every key (files list, diff, comment buffer) and command |
+| `gu`      | Switch the diff between side-by-side and unified |
 
 ## Diff mappings
 

@@ -4,6 +4,7 @@ local state = require("gh_review.state")
 local api_mod = require("gh_review.api")
 local config = require("gh_review.config")
 local win = require("gh_review.win")
+local unified = require("gh_review.unified")
 
 local M = {}
 
@@ -32,6 +33,60 @@ local function trim_trailing_empty(lines)
   end
 end
 
+-- "split" (side by side) or "unified", toggled per session.
+local view_mode = nil
+
+-- The user's 'diffopt' while a split diff overrides its inline setting.
+local saved_diffopt = nil
+
+-- Side by side, Vim marks the changed part of a line per 'diffopt' "inline:".
+-- It is a global option, so set it while a review diff is open and put the
+-- user's value back when the diff closes.
+local function apply_inline()
+  local mode = ({ word = "inline:word", char = "inline:char", off = "inline:none" })[config.options.diff_inline]
+  if saved_diffopt == nil then saved_diffopt = vim.o.diffopt end
+  local parts = {}
+  for part in vim.o.diffopt:gmatch("[^,]+") do
+    if not part:find("^inline:") then parts[#parts + 1] = part end
+  end
+  parts[#parts + 1] = mode
+  -- Neovim before 0.12 has no "inline:" item; leave its default alone there.
+  if not pcall(function() vim.o.diffopt = table.concat(parts, ",") end) then
+    vim.o.diffopt = saved_diffopt
+  end
+end
+
+local function restore_inline()
+  if saved_diffopt ~= nil then
+    vim.o.diffopt = saved_diffopt
+    saved_diffopt = nil
+  end
+end
+
+function M.view_mode()
+  return view_mode or config.options.diff_view
+end
+
+-- The hunks of the unified view on the head pane, or nil in a split view.
+local function unified_hunks()
+  local rbuf = state.get_right_bufnr()
+  if rbuf == -1 or vim.fn.bufexists(rbuf) ~= 1 then return nil end
+  return vim.b[rbuf].gh_review_unified_hunks
+end
+
+-- Where a thread shows: its side and line, except that a unified view has no
+-- base pane, so base-side threads show on the head line their code maps to.
+local function thread_position(t)
+  local line = get_thread_line(t)
+  local side = state.get(t, "diffSide", "RIGHT")
+  local hunks = unified_hunks()
+  if side == "LEFT" and hunks and line > 0 then
+    local count = vim.api.nvim_buf_line_count(state.get_right_bufnr())
+    return "RIGHT", unified.base_to_head(line, hunks, count)
+  end
+  return side, line
+end
+
 local function get_current_side()
   if vim.api.nvim_get_current_buf() == state.get_left_bufnr() then
     return "LEFT"
@@ -53,9 +108,10 @@ local function place_signs(path)
   end
 
   for _, t in ipairs(file_threads) do
-    local line = get_thread_line(t)
+    local side, line = thread_position(t)
+    -- A base-side thread drawn on the head pane of a unified view.
+    local from_base = side ~= state.get(t, "diffSide", "RIGHT")
     if line > 0 then
-      local side = state.get(t, "diffSide", "RIGHT")
       local target_bufnr = side == "LEFT" and lbuf or rbuf
       if target_bufnr ~= -1 and vim.fn.bufexists(target_bufnr) == 1 then
         local line_count = vim.api.nvim_buf_line_count(target_bufnr)
@@ -95,7 +151,7 @@ local function place_signs(path)
             body = body:sub(1, 57) .. "..."
           end
           if author ~= "" and body ~= "" then
-            virt_text = {{ author .. ": " .. body, "GHReviewVirtText" }}
+            virt_text = {{ (from_base and "(base) " or "") .. author .. ": " .. body, "GHReviewVirtText" }}
           end
         end
 
@@ -173,9 +229,8 @@ local function preview_thread_at_cursor()
 
   local t
   for _, thread in ipairs(file_threads) do
-    local thread_line = get_thread_line(thread)
+    local thread_side, thread_line = thread_position(thread)
     if thread_line > 0 then
-      local thread_side = state.get(thread, "diffSide", "RIGHT")
       if thread_line == lnum and thread_side == side then
         t = thread
         break
@@ -248,6 +303,7 @@ local function preview_thread_at_cursor()
     border = "rounded",
     style = "minimal",
   })
+  win.no_folds(preview_winid)
 
   -- Close on q, Esc, or BufLeave
   local opts = { buffer = preview_bufnr, silent = true }
@@ -267,9 +323,8 @@ local function open_thread_at_cursor()
   local file_threads = state.get_threads_for_file(path)
 
   for _, t in ipairs(file_threads) do
-    local thread_line = get_thread_line(t)
+    local thread_side, thread_line = thread_position(t)
     if thread_line > 0 then
-      local thread_side = state.get(t, "diffSide", "RIGHT")
       if thread_line == lnum and thread_side == side then
         require("gh_review.thread").open(t.id)
         return
@@ -284,7 +339,45 @@ local function create_comment_at_cursor()
   local lnum = vim.fn.line(".")
   local side = get_current_side()
   local path = state.get_diff_path()
+  -- A unified view has no base pane: removed lines shown above this line can
+  -- only be commented on from here.
+  local hunks = unified_hunks()
+  local removed = hunks and unified.removed_above(lnum, hunks, vim.api.nvim_buf_line_count(0))
+  if removed then
+    vim.ui.select({ "This line", "The removed lines above (base side)" }, { prompt = "Comment on:" },
+      function(choice, idx)
+        if not choice then return end
+        if idx == 2 then
+          require("gh_review.thread").open_new(path, removed[1], removed[2], "LEFT")
+        else
+          require("gh_review.thread").open_new(path, lnum, lnum, side)
+        end
+      end)
+    return
+  end
   require("gh_review.thread").open_new(path, lnum, lnum, side)
+end
+
+-- ]c / [c: Vim's own diff jumps in a split view; hunk starts in a unified one.
+local function jump_hunk(dir)
+  local hunks = unified_hunks()
+  if not hunks then
+    vim.cmd("normal! " .. (dir > 0 and "]c" or "[c"))
+    return
+  end
+  local lnum = vim.fn.line(".")
+  local starts = unified.starts(hunks, vim.api.nvim_buf_line_count(0))
+  local target = nil
+  for _, line in ipairs(starts) do
+    if dir > 0 and line > lnum and (not target or line < target) then target = line end
+    if dir < 0 and line < lnum and (not target or line > target) then target = line end
+  end
+  if target then
+    vim.api.nvim_win_set_cursor(0, { target, 0 })
+    vim.cmd("normal! zv")
+  else
+    print("No more changes")
+  end
 end
 
 local function create_comment_visual()
@@ -328,9 +421,8 @@ local function jump_to_next_thread()
 
   local next_line = 999999
   for _, t in ipairs(file_threads) do
-    local thread_line = get_thread_line(t)
+    local thread_side, thread_line = thread_position(t)
     if thread_line > 0 then
-      local thread_side = state.get(t, "diffSide", "RIGHT")
       if thread_side == side and thread_line > lnum and thread_line < next_line then
         next_line = thread_line
       end
@@ -352,9 +444,8 @@ local function jump_to_prev_thread()
 
   local prev_line = 0
   for _, t in ipairs(file_threads) do
-    local thread_line = get_thread_line(t)
+    local thread_side, thread_line = thread_position(t)
     if thread_line > 0 then
-      local thread_side = state.get(t, "diffSide", "RIGHT")
       if thread_side == side and thread_line < lnum and thread_line > prev_line then
         prev_line = thread_line
       end
@@ -459,6 +550,10 @@ local ACTIONS = {
   goto_file    = { { "n", function() M.goto_file() end, "Go to file (checkout only)" } },
   next_frame   = { { "n", function() require("gh_review.stack.view").step(1) end, "Next changed frame" } },
   prev_frame   = { { "n", function() require("gh_review.stack.view").step(-1) end, "Previous changed frame" } },
+  help         = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },
+  toggle_view  = { { "n", function() M.toggle_view() end, "Toggle side-by-side / unified" } },
+  next_hunk    = { { "n", function() jump_hunk(1) end, "Next change" } },
+  prev_hunk    = { { "n", function() jump_hunk(-1) end, "Previous change" } },
   close        = { { "n", function() M.close_diff() end, "Close diff" } },
   send              = { { "n", function() require("gh_review").send() end, "Send comments to agent" } },
   scope_pr          = { { "n", function() require("gh_review").set_scope("pr") end, "Scope: PR" } },
@@ -550,13 +645,16 @@ local function show_diff(path, left_content, right_content, line, side)
   local left_name = "gh-review://LEFT/" .. path
   local right_name = "gh-review://RIGHT/" .. path
 
-  -- Clean up existing left diff window
+  -- Clean up existing left diff window, or the unshown base buffer of a
+  -- unified view
   local old_left = state.get_left_bufnr()
   if old_left ~= -1 and vim.fn.bufexists(old_left) == 1 then
     local winid = vim.fn.bufwinid(old_left)
     if winid ~= -1 then
       vim.fn.win_gotoid(winid)
       win.close_current()
+    else
+      vim.cmd("silent! bwipeout! " .. old_left)
     end
   end
 
@@ -594,6 +692,22 @@ local function show_diff(path, left_content, right_content, line, side)
   end
   state.set_right_bufnr(right_bufnr)
   setup_diff_buffer(right_bufnr, right_name, path, right_content, state.is_local_checkout())
+  -- Drop what a unified view of this file left behind before redrawing.
+  unified.clear(right_bufnr)
+  if vim.wo.foldmethod == "manual" then vim.cmd("silent! normal! zE") end
+
+  if M.view_mode() == "unified" then
+    -- The base buffer still exists, unshown: base-side comments read their
+    -- code context from it.
+    local left_bufnr = vim.fn.bufnr(left_name, true)
+    state.set_left_bufnr(left_bufnr)
+    vim.api.nvim_buf_call(left_bufnr, function()
+      setup_diff_buffer(left_bufnr, left_name, path, left_content)
+    end)
+    return M.show_unified(path, left_bufnr, right_bufnr, line, side)
+  end
+
+  apply_inline()
 
   -- Set up the left (base) buffer in a vertical split
   vim.cmd("noautocmd aboveleft vsplit")
@@ -684,6 +798,74 @@ local function show_diff(path, left_content, right_content, line, side)
       end
     end
   end, 50)
+end
+
+local function winbar_labels()
+  local base_short = state.get_merge_base_oid()
+  if base_short == "" then base_short = state.get_base_oid() end
+  base_short = base_short:sub(1, 7)
+  if state.is_local_mode() then
+    return state.get_scope(), "working tree", base_short
+  end
+  return string.format("PR #%d", state.get_pr_number()),
+    string.format("head (%s)", state.get_head_oid():sub(1, 7)), base_short
+end
+
+-- One window: the head file with the diff drawn on it (see unified.lua).
+function M.show_unified(path, left_bufnr, right_bufnr, line, side)
+  local winid = vim.fn.bufwinid(right_bufnr)
+  vim.fn.win_gotoid(winid)
+  vim.wo.diff = false
+  vim.wo.wrap = true
+  restore_inline()
+  unified.inline = config.options.diff_inline
+  local base_lines = vim.api.nvim_buf_get_lines(left_bufnr, 0, -1, false)
+  local hunks = unified.render(right_bufnr, base_lines)
+  local count = vim.api.nvim_buf_line_count(right_bufnr)
+  local fold = config.fold_settings()
+  if fold.foldenable then
+    unified.fold(hunks, count, fold.foldlevel)
+  else
+    vim.wo.foldenable = false
+  end
+
+  local label, head_label, base_short = winbar_labels()
+  vim.wo[winid].winbar = string.format(" %s · %s · unified: %s vs base (%s)", label, path, head_label, base_short)
+
+  place_signs(path)
+  require("gh_review.stack.view").place_notes(path, right_bufnr)
+
+  if line then
+    -- A base line (a removed function) shows where its block hangs.
+    if side == "LEFT" then line = unified.base_to_head(line, hunks, count) end
+    pcall(vim.api.nvim_win_set_cursor, 0, { math.min(line, count), 0 })
+    vim.cmd("normal! zvzz")
+  else
+    local starts = unified.starts(hunks, count)
+    pcall(vim.api.nvim_win_set_cursor, 0, { starts[1] or 1, 0 })
+    vim.cmd("normal! zvzz")
+  end
+end
+
+-- Switch between side-by-side and unified, keeping the file and line.
+function M.toggle_view()
+  view_mode = M.view_mode() == "unified" and "split" or "unified"
+  local path = state.get_diff_path()
+  local rbuf = state.get_right_bufnr()
+  if path == "" or rbuf == -1 then
+    print("Diff view: " .. view_mode)
+    return
+  end
+  local line = 1
+  local rwin = vim.fn.bufwinid(rbuf)
+  local lwin = vim.fn.bufwinid(state.get_left_bufnr())
+  if vim.api.nvim_get_current_win() == lwin and lwin ~= -1 then
+    -- From the base pane: open the unified view where that base line shows.
+    M.open(path, { line = vim.api.nvim_win_get_cursor(lwin)[1], side = "LEFT" })
+    return
+  end
+  if rwin ~= -1 then line = vim.api.nvim_win_get_cursor(rwin)[1] end
+  M.open(path, { line = line })
 end
 
 local function fetch_graphql_content(ref, path, callback)
@@ -871,17 +1053,26 @@ function M.close_diff()
     vim.b[right].gh_review_diff = false
   end
 
-  -- The head is often a real file that stays open: drop the stack notes.
+  -- The head is often a real file that stays open: drop the stack notes and
+  -- anything a unified view drew on it, and its folds.
   if right ~= -1 and vim.fn.bufexists(right) == 1 then
     vim.api.nvim_buf_clear_namespace(right, require("gh_review.stack.view").ns, 0, -1)
+    local had_unified = vim.b[right].gh_review_unified_hunks ~= nil
+    unified.clear(right)
+    local rwin = vim.fn.bufwinid(right)
+    if had_unified and rwin ~= -1 then
+      vim.api.nvim_win_call(rwin, function() vim.cmd("silent! normal! zE") end)
+    end
   end
 
-  -- Close the left diff window
+  -- Close the left diff window (a unified view's base buffer is unshown)
   if left ~= -1 and vim.fn.bufexists(left) == 1 then
     local winid = vim.fn.bufwinid(left)
     if winid ~= -1 then
       vim.fn.win_gotoid(winid)
       win.close_current()
+    else
+      vim.cmd("silent! bwipeout! " .. left)
     end
   end
 
@@ -916,6 +1107,7 @@ function M.close_diff()
   state.set_right_bufnr(-1)
   state.set_diff_path("")
   state.set_saved_win_opts(nil)
+  restore_inline()
 
   -- Return focus to the files list
   local fb = state.get_files_bufnr()

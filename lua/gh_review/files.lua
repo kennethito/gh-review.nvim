@@ -43,7 +43,15 @@ local function file_lines()
   local files = state.get_changed_files()
   local lines, line_items = {}, {}
   lines[#lines + 1] = string.format("Files changed (%d)", #files)
-  lines[#lines + 1] = state.get_local_info().note or ""
+  local note = state.get_local_info().note
+  if not state.is_local_mode() then
+    local drafts = require("gh_review.pr_drafts").count()
+    if drafts > 0 then
+      note = string.format("%d draft%s saved locally, not on GitHub: :GHReviewSubmit publishes", drafts,
+        drafts == 1 and "" or "s")
+    end
+  end
+  lines[#lines + 1] = note or ""
 
   for _, f in ipairs(files) do
     local flag = change_type_to_flag(state.get(f, "changeType", "MODIFIED"))
@@ -276,6 +284,7 @@ local ACTIONS = {
   toggle_fold       = { { "n", function() vim.cmd("silent! normal! za") end, "Fold or unfold an entry group" } },
   toggle_position   = { { "n", function() M.toggle_position() end, "Move list left/bottom" } },
   help              = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },
+  toggle_view       = { { "n", function() require("gh_review.diff").toggle_view() end, "Toggle side-by-side / unified" } },
 }
 
 -- For the `?` help, which lists what each surface maps.

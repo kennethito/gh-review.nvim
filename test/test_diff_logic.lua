@@ -380,11 +380,13 @@ local function fire_optionset(pattern)
   vim.api.nvim_exec_autocmds("OptionSet", { pattern = pattern })
 end
 
+-- A review buffer in a window in diff mode, as a side-by-side diff has.
 local function guard_fixture()
   vim.cmd("tabnew")
   local bufnr = vim.api.nvim_get_current_buf()
   vim.bo[bufnr].buftype = "nofile"
   vim.b[bufnr].gh_review_diff = true
+  vim.wo.diff = true
   return bufnr, vim.api.nvim_get_current_win()
 end
 
@@ -400,6 +402,25 @@ h.run_test("Fold guard: restores foldmethod and foldenable by default", function
   vim.wo[winid].foldenable = false
   fire_optionset("foldenable")
   h.assert_true(vim.wo[winid].foldenable, "guard restores foldenable")
+
+  vim.b[bufnr].gh_review_diff = false
+  vim.cmd("tabclose!")
+  config.reset()
+end)
+
+h.run_test("Fold guard: leaves a review window that is not in diff mode (unified view)", function()
+  local config = require("gh_review.config")
+  config.reset()
+  local bufnr, winid = guard_fixture()
+  vim.wo[winid].diff = false
+
+  vim.wo[winid].foldmethod = "manual"
+  fire_optionset("foldmethod")
+  h.assert_equal("manual", vim.wo[winid].foldmethod)
+
+  vim.wo[winid].foldenable = false
+  fire_optionset("foldenable")
+  h.assert_false(vim.wo[winid].foldenable)
 
   vim.b[bufnr].gh_review_diff = false
   vim.cmd("tabclose!")

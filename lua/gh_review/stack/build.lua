@@ -339,10 +339,19 @@ local function walk_callers(ctx)
         level[#level + 1] = node
       end
     end
+    -- The limit is on unchanged frames climbed above the change: every
+    -- changed function is walked, however large the diff.
     ctx.stats.visited = ctx.stats.visited + #level
-    if ctx.stats.visited > ctx.opts.max_frames then
+    local context = 0
+    for _, node in ipairs(level) do
+      if node.status == "context" then context = context + 1 end
+    end
+    ctx.stats.context = (ctx.stats.context or 0) + context
+    if context > 0 and ctx.stats.context > ctx.opts.max_frames then
       ctx.stats.truncated = true
-      for _, node in ipairs(level) do node.truncated = true end
+      for _, node in ipairs(level) do
+        if node.status == "context" then node.truncated = true end
+      end
       return
     end
 

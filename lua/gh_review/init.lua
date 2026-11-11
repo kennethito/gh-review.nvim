@@ -411,7 +411,7 @@ function M.open(pr_number_str)
     state.set_pr(result)
 
     local thread_nodes = ((pr.reviewThreads or {}).nodes or {})
-    state.set_threads(thread_nodes)
+    require("gh_review.pr_drafts").attach(thread_nodes)
 
     local function load_ui()
       fetch_merge_base(function()
@@ -500,6 +500,8 @@ function M.start_review()
 end
 
 -- Submit a review. In a local scope this sends the comments to the agent.
+-- With PR drafts, it publishes them all as one review, or uploads them to a
+-- pending review without publishing.
 function M.submit_review()
   if state.is_local_mode() then
     M.send()
@@ -507,6 +509,28 @@ function M.submit_review()
   end
   if state.get_pr_id() == "" then
     vim.notify("[gh-review] No PR loaded. Use :GHReview {number|url} first.", vim.log.levels.ERROR)
+    return
+  end
+  local drafts = require("gh_review.pr_drafts")
+  local count = drafts.count()
+  if count > 0 then
+    local choices = { "Comment", "Approve", "Request changes", "Upload to GitHub as a pending review (not published)" }
+    local events = { "COMMENT", "APPROVE", "REQUEST_CHANGES", false }
+    vim.ui.select(choices, {
+      prompt = string.format("Publish %d draft%s as:", count, count == 1 and "" or "s"),
+    }, function(choice, idx)
+      if not choice then return end
+      local event = events[idx]
+      if event == false then
+        drafts.publish(nil)
+      elseif event == "APPROVE" then
+        drafts.publish(event, "")
+      else
+        vim.ui.input({ prompt = "Review body (optional): " }, function(body)
+          drafts.publish(event, body or "")
+        end)
+      end
+    end)
     return
   end
 
@@ -569,6 +593,19 @@ end
 
 -- Discard the pending review.
 function M.discard_review()
+  local drafts = require("gh_review.pr_drafts")
+  if not state.is_local_mode() and drafts.count() > 0 then
+    vim.ui.select({ "Yes", "No" }, {
+      prompt = string.format("Delete %d local draft%s? (Nothing on GitHub changes.)", drafts.count(),
+        drafts.count() == 1 and "" or "s"),
+    }, function(choice)
+      if choice ~= "Yes" then return end
+      require("gh_review.local_store").clear_drafts()
+      drafts.refresh()
+      print("Drafts deleted")
+    end)
+    return
+  end
   if state.is_local_mode() then
     vim.ui.select({ "Yes", "No" }, {
       prompt = "Delete every comment not yet sent to the agent?",
@@ -625,7 +662,7 @@ function M.refresh_threads()
     if err then return end
     local pr = (((result or {}).data or {}).repository or {}).pullRequest
     local thread_nodes = ((pr or {}).reviewThreads or {}).nodes or {}
-    state.set_threads(thread_nodes)
+    require("gh_review.pr_drafts").attach(thread_nodes)
     diff.refresh_signs()
     files.rerender()
     print("Threads refreshed")
@@ -730,6 +767,10 @@ function M.statusline()
     return ""
   end
   local parts = { string.format("PR #%d", state.get_pr_number()) }
+  local draft_count = require("gh_review.pr_drafts").count()
+  if draft_count > 0 then
+    parts[#parts + 1] = string.format("%d draft%s", draft_count, draft_count == 1 and "" or "s")
+  end
   if state.is_review_active() then
     parts[#parts + 1] = "reviewing"
   end

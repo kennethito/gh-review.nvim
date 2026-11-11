@@ -19,6 +19,13 @@ M.defaults = {
     max_frames = 400,
     max_context_hops = 3,   -- unchanged frames climbed above changed code
   },
+  -- Save PR comments and replies on this machine until :GHReviewSubmit
+  -- publishes them; false posts each one to GitHub when you write it.
+  pr_drafts = true,
+  -- "split" (side by side) or "unified" (the head file with removed lines drawn in).
+  diff_view = "split",
+  -- What to mark inside a changed line: "word", "char", or "off".
+  diff_inline = "word",
   -- Where the files list sits, and its height (bottom) or width (left).
   files_position = "bottom",
   files_size = { bottom = 12, left = 50 },
@@ -42,6 +49,11 @@ M.defaults = {
       scope_turn        = false,
       next_frame        = "]s",
       prev_frame        = "[s",
+      -- The head pane is your real file, where `?` is backward search.
+      help              = "g?",
+      toggle_view       = "gu",
+      next_hunk         = "]c",
+      prev_hunk         = "[c",
     },
     files = {
       open          = "<CR>",
@@ -58,12 +70,14 @@ M.defaults = {
       toggle_fold       = "<Tab>",
       toggle_position   = "P",
       help              = "?",
+      toggle_view       = "gu",
     },
     thread = {
       submit       = "<C-s>",
       resolve      = "<C-r>",
       close        = "q",
       close_insert = "<C-q>",
+      help         = "g?",
     },
   },
 }
@@ -220,10 +234,24 @@ function M.setup(opts)
   local ok = true
   for key in pairs(opts) do
     if key ~= "fold" and key ~= "keymaps" and key ~= "turn" and key ~= "stack"
-      and key ~= "files_position" and key ~= "files_size" then
-      warn(string.format("unknown option %q (expected fold, keymaps, turn, stack, files_position, or files_size)", key))
+      and key ~= "files_position" and key ~= "files_size" and key ~= "diff_view" and key ~= "pr_drafts"
+      and key ~= "diff_inline" then
+      warn(string.format("unknown option %q (expected fold, keymaps, turn, stack, diff_view, pr_drafts, files_position, or files_size)", key))
       ok = false
     end
+  end
+  if opts.diff_inline ~= nil and opts.diff_inline ~= "word" and opts.diff_inline ~= "char"
+    and opts.diff_inline ~= "off" then
+    warn('diff_inline must be "word", "char", or "off"')
+    ok = false
+  end
+  if opts.pr_drafts ~= nil and type(opts.pr_drafts) ~= "boolean" then
+    warn("pr_drafts must be a boolean")
+    ok = false
+  end
+  if opts.diff_view ~= nil and opts.diff_view ~= "split" and opts.diff_view ~= "unified" then
+    warn('diff_view must be "split" or "unified"')
+    ok = false
   end
   if not validate_stack(opts.stack) then ok = false end
   if not validate_files(opts) then ok = false end

@@ -73,8 +73,13 @@ end
 function M.snapshot(root)
   local index = vim.fn.tempname()
   local real_index = M.git_path(root, "index")
-  if real_index and vim.uv.fs_stat(real_index) then
+  local stat = real_index and vim.uv.fs_stat(real_index)
+  if stat then
     vim.uv.fs_copyfile(real_index, index)
+    -- Keep the index's own timestamp: git trusts cached file stats only for
+    -- files older than the index, and a fresh copy would make a same-second,
+    -- same-size edit look unchanged.
+    vim.uv.fs_utime(index, stat.atime.sec + stat.atime.nsec / 1e9, stat.mtime.sec + stat.mtime.nsec / 1e9)
   end
   local env = { GIT_INDEX_FILE = index }
   local added = M.git(root, { "add", "-A" }, env)

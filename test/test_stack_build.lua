@@ -86,6 +86,12 @@ h.run_test("The climb stops after the configured unchanged hops, and says so", f
   h.assert_match("@ app%.core%.middle/1 .*climb stopped here", table.concat(rows.to_text(short), "\n"))
 end)
 
+h.run_test("The frame limit never stops changed functions from being walked", function()
+  local tight = run({ max_frames = 1 })
+  h.assert_true(tight.callers["app.core.fresh/1"] ~= nil, "callers of changed code still found")
+  h.assert_true(tight.callers["app.core.leaf/1"] ~= nil)
+end)
+
 h.run_test("Every changed function and file shows up somewhere in the view", function()
   local shown_keys, shown_paths = {}, {}
   for _, row in ipairs(rows.build(result)) do

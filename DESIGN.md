@@ -97,6 +97,8 @@ lua/gh_review/
   turn.lua                    Last-turn baseline: herdr watcher and fallback refs
   agent.lua                   Formats comments and sends them to a coding agent
   help.lua                    `?` float: each surface's mapped keys (from its ACTIONS) and the commands
+  unified.lua                 Unified diff drawn on the head buffer: hunks, highlights, removed virt_lines, folds
+  pr_drafts.lua               PR comments kept locally; merged into GitHub threads; published as one review
   stack/build.lua             Stack generator: diff -> changed functions -> callers -> groups
   stack/rows.lua              Flattens the stack graph into rows, each subtree drawn once
   stack/view.lua              Async build, rendering into the files list, diff notes, ]s/[s
@@ -469,6 +471,42 @@ list redraws every 25 files. The result is cached per scope, base and file list,
 scope switches and refreshes. `rows.lua` draws each subtree once and references it elsewhere. Notes in
 the diff use their own namespace, cleared when the diff closes.
 
+## PR drafts (`pr_drafts.lua`)
+
+With `pr_drafts` (default), PR comments go to the same `local_store` local scopes use, at a path keyed by
+host/owner/repo/number under `stdpath("data")`. New threads are stored in the GitHub thread shape
+(`local_thread_N`); replies to GitHub threads are stored separately with the thread's first comment id
+and appended to that thread as pending comment nodes by `pr_drafts.merged()`. Every place threads are
+loaded from GitHub (`open`, `refresh_threads`) goes through `pr_drafts.attach`, which keeps the GitHub
+nodes and re-merges drafts after each draft change, so signs, the thread buffer, navigation, and send-to-
+agent see drafts like any pending comment.
+
+`pr_drafts.publish(event, body)` runs sequentially: reuse the pending review or start one, add each draft
+thread (`addPullRequestReviewThread`, extra comments as replies), add each draft reply
+(`addPullRequestReviewComment`, `inReplyTo` = first comment id), then `submitPullRequestReview` unless
+`event` is nil. Each draft is removed from the store once GitHub has it, so a failure part way leaves the
+rest as drafts and the pending review open for a retry.
+
+## Unified view (`unified.lua`)
+
+`diff.show_diff` branches on `diff.view_mode()` (session toggle, default `config.diff_view`). In
+unified mode the base buffer is still created and filled but never shown, so `state.left_bufnr`, base
+comments, and the comment buffer's code context work unchanged. The head window is left out of diff
+mode; `unified.render` draws on the head buffer in its own namespace:
+
+- `vim.diff` hunks between the base lines and the head buffer's lines.
+- Added lines: `line_hl_group = DiffAdd`. Paired changed lines are diffed character by character
+  (lines up to 400 bytes) and the changed bytes get `DiffText`.
+- Removed lines: `virt_lines` above the head line the block hangs above (`unified.anchor`), or below
+  the last line for a removal at the end. Tabs are expanded, since virtual text shows them raw.
+- Folds: manual folds over unchanged stretches, three lines of context per hunk, closed per
+  `fold.level`.
+
+`thread_position` maps base-side threads onto the head via `unified.base_to_head`, so signs, `gt`,
+`K`, and `]t`/`[t` find them; `gc` offers the removed block above the cursor line (`removed_above`).
+`]c`/`[c` run Vim's own diff jumps in a split view and hunk jumps in a unified one. `close_diff` and
+the next `show_diff` clear the drawing, delete the manual folds, and wipe the unshown base buffer.
+
 ## Testing
 
 Tests run in headless Neovim (`nvim --clean --headless`) and use a custom `run_test()` harness that wraps each test function in `pcall()` to capture errors. Test files:
@@ -488,6 +526,8 @@ Tests run in headless Neovim (`nvim --clean --headless`) and use a custom `run_t
 | `test_turn.lua`       | Status folding, turn edges, snapshots, watcher, baseline ref precedence |
 | `test_stack_build.lua` | Generator on a Lua fixture repo: statuses, callers, dynamic edges, recursion, grouping, shared, limits, cache |
 | `test_stack_elixir.lua` | Elixir adapter (skipped without the parser): heads, arities, aliases, imports, captures, pipes, triples, test frames, data keys |
+| `test_pr_drafts.lua`  | Drafts with GraphQL stubbed: nothing sent on `:w`, reply drafts, reload, publish order and arguments, partial failure, upload-only, discard, `pr_drafts = false` |
+| `test_unified.lua`    | Hunk mapping, folds, real-file head, highlights and removed lines, `]c`, base-side comments, `gu` both ways, cleanup |
 | `test_help.lua`       | `?` float: configured keys per surface, disabled keys omitted, command descriptions, close/toggle |
 | `test_stack_view.lua` | Stack mode in the files list: build, folds, `<CR>`, see-above jumps, diff notes, `]s`, `P`, no-checkout message |
 

@@ -67,12 +67,18 @@ function M.lines()
 end
 
 local open_win = nil
+local return_win = nil
 
 function M.close()
   if open_win and vim.api.nvim_win_is_valid(open_win) then
     vim.api.nvim_win_close(open_win, true)
   end
   open_win = nil
+  -- Back to the pane the help was opened from (files list, diff, or comment).
+  if return_win and vim.api.nvim_win_is_valid(return_win) then
+    vim.api.nvim_set_current_win(return_win)
+  end
+  return_win = nil
 end
 
 function M.is_open()
@@ -84,6 +90,7 @@ function M.open()
     M.close()
     return
   end
+  return_win = vim.api.nvim_get_current_win()
   local lines = M.lines()
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -105,6 +112,10 @@ function M.open()
     title = " gh-review help · q to close ",
     title_pos = "center",
   })
+
+  require("gh_review.win").no_folds(open_win)
+  vim.wo[open_win].wrap = false
+  vim.wo[open_win].cursorline = true
 
   local ns = vim.api.nvim_create_namespace("gh_review_help")
   for i, l in ipairs(lines) do
