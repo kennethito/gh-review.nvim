@@ -156,6 +156,33 @@ function M.analyze(source)
     end
   end
 
+  -- A readable name for one parameter, and whether it is a real name (a
+  -- variable) or a stand-in (a pattern). `%Game{} = game` reads as `game`,
+  -- `opts \\ []` keeps its default, `_name` and pure patterns are stand-ins.
+  local function param_name(param)
+    local kind = param:type()
+    if kind == "identifier" then
+      local name = text(param, source)
+      return name, name:sub(1, 1) ~= "_"
+    elseif kind == "binary_operator" then
+      local op = operator(param, source)
+      local sides = named_children(param)
+      if op == "\\\\" and sides[1] then
+        local name, real = param_name(sides[1])
+        local default = sides[2] and text(sides[2], source) or ""
+        if #default > 12 then default = "…" end
+        return name .. " \\\\ " .. default, real
+      elseif op == "=" then
+        for i = #sides, 1, -1 do
+          if sides[i]:type() == "identifier" then return param_name(sides[i]) end
+        end
+      end
+    end
+    local pattern = text(param, source):gsub("%s+", " ")
+    if #pattern > 16 then pattern = pattern:sub(1, 15) .. "…" end
+    return pattern, false
+  end
+
   local function add_def(ctx, node, keyword)
     local args = child_of_type(node, "arguments")
     local head = args and named_children(args)[1]
@@ -163,7 +190,7 @@ function M.analyze(source)
     if head:type() == "binary_operator" and operator(head, source) == "when" then
       head = named_children(head)[1]
     end
-    local name, max_arity, defaults = nil, 0, 0
+    local name, max_arity, defaults, params_list = nil, 0, 0, {}
     if head:type() == "call" then
       local ident = child_of_type(head, "identifier")
       name = ident and text(ident, source)
@@ -173,6 +200,8 @@ function M.analyze(source)
         if param:type() == "binary_operator" and operator(param, source) == "\\\\" then
           defaults = defaults + 1
         end
+        local pname, real = param_name(param)
+        params_list[#params_list + 1] = { pname, real }
       end
     elseif head:type() == "identifier" then
       name = text(head, source)
@@ -184,9 +213,17 @@ function M.analyze(source)
     local def = by_key[key]
     if not def then
       def = { key = key, module = ctx.module, name = name, min_arity = max_arity - defaults,
-        max_arity = max_arity, public = keyword == "def" or keyword == "defmacro", clauses = {} }
+        max_arity = max_arity, public = keyword == "def" or keyword == "defmacro", clauses = {},
+        params = {}, real_param = {} }
       by_key[key] = def
       defs[#defs + 1] = def
+    end
+    -- Per position, the first real name any clause gives; a pattern only
+    -- while no clause names it.
+    for i, p in ipairs(params_list) do
+      if def.params[i] == nil or (p[2] and not def.real_param[i]) then
+        def.params[i], def.real_param[i] = p[1], p[2]
+      end
     end
     def.min_arity = math.min(def.min_arity, max_arity - defaults)
     def.clauses[#def.clauses + 1] = { first, last }

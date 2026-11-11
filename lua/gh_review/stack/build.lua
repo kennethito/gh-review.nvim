@@ -154,7 +154,7 @@ local function node_from_def(def, path, status, ctx)
     key = def.key, module = def.module, name = def.name, min_arity = def.min_arity,
     max_arity = def.max_arity, path = path, line = def.clauses[1][1], jump_line = def.clauses[1][1],
     clauses = def.clauses, status = status, kind = "def",
-    public = def.public, behaviours = implemented(ctx, def),
+    public = def.public, behaviours = implemented(ctx, def), params = def.params,
   }
 end
 

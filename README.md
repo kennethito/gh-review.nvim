@@ -236,6 +236,7 @@ Press `s` in the files list to see the change as call stacks instead of files: o
       + Data.Action.GameStatus.Runner.notification_score/1  runner.ex:65
 ```
 
+- Functions show with their parameter names, `Runner.process_game(game)`: a binding like `%Game{} = game` reads as `game`, defaults stay visible (`opts \\ []`), and a pure pattern (`{:tick, _}`) shows only when no clause names that position.
 - `+` new, `~` changed, `-` removed; `⇢` a call made asynchronously (`:timer.apply_after`, `apply/3`, `{Module, :fun, args}` tuples such as RPC casts and scheduled jobs); `⇉` a call through a variable (`tool.run(input, ctx)`) reaching a behaviour's implementations (`via Tool`) or a module the calling file names as a value (`via a module value`).
 - Entry points that converge on the same code fold into one line (`+4 more entries`). A function reached twice is drawn once; later rows say `↪ … (see above)`.
 - `⚠ N`: an entry point outside the change also reaches this function: existing callers of code the change modified. Only the frame where they cross in is marked.

@@ -64,8 +64,13 @@ function M.analyze(source, path)
   local function add_def(name, fn_node, range_node)
     local arity = param_count(fn_node)
     local key = key_of(module, name, arity)
+    local params = {}
+    local list = fn_node:field("parameters")[1]
+    for child in (list and list:iter_children() or function() end) do
+      if child:named() then params[#params + 1] = text(child, source) end
+    end
     defs[#defs + 1] = { key = key, module = module, name = name, min_arity = arity, max_arity = arity,
-      public = true, clauses = { { range_node:start() + 1, range_node:end_() + 1 } } }
+      public = true, clauses = { { range_node:start() + 1, range_node:end_() + 1 } }, params = params }
     return key
   end
 

@@ -9,8 +9,12 @@ local function short_module(module)
   return module or "?"
 end
 
+-- `Module.fun(a, b \\ [])` when the parameters are known, else `Module.fun/2`.
 function M.frame_label(node)
   if node.kind ~= "def" then return node.name end
+  if node.params and #node.params == node.max_arity then
+    return string.format("%s.%s(%s)", short_module(node.module), node.name, table.concat(node.params, ", "))
+  end
   local arity = node.min_arity == node.max_arity and tostring(node.max_arity)
     or string.format("%d..%d", node.min_arity, node.max_arity)
   return string.format("%s.%s/%s", short_module(node.module), node.name, arity)

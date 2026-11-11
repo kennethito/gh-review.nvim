@@ -168,6 +168,48 @@ h.run_test("Data keys: map writes and access reads", function()
   h.assert_equal(nil, reads.scoring_player_id)
 end)
 
+-- ------- Parameter names -------
+
+local PARAMS = ex.analyze([[
+defmodule P do
+  def process_game(%Sport.Game{} = game), do: game
+  def run(input, opts \\ []) when is_list(input), do: input
+  def kind(%{type: :a}), do: :a
+  def kind(other), do: other
+  def handle_info({:tick, _}, state), do: state
+  def cb(_unused, x), do: x
+  def cb(used, _x), do: used
+  def far(a \\ %{very_long_default_value: 1}), do: a
+end
+]])
+
+local function params_of(name)
+  for _, d in ipairs(PARAMS.defs) do
+    if d.name == name then return table.concat(d.params, ", ") end
+  end
+end
+
+h.run_test("Parameter names: variables, bindings, defaults", function()
+  h.assert_equal("game", params_of("process_game"), "%Struct{} = var reads as var")
+  h.assert_equal("input, opts \\\\ []", params_of("run"))
+  h.assert_equal("a \\\\ …", params_of("far"), "a long default is shortened")
+end)
+
+h.run_test("Parameter names: across clauses the first real name wins", function()
+  h.assert_equal("other", params_of("kind"), "a later clause names the pattern")
+  h.assert_equal("used, x", params_of("cb"), "_names give way to real ones")
+  h.assert_equal("{:tick, _}, state", params_of("handle_info"), "a pattern only when nothing names it")
+end)
+
+h.run_test("Frames are labelled with their parameters", function()
+  local rows = require("gh_review.stack.rows")
+  h.assert_equal("P.run(input, opts \\\\ [])",
+    rows.frame_label({ kind = "def", module = "P", name = "run", min_arity = 1, max_arity = 2,
+      params = { "input", "opts \\\\ []" } }))
+  h.assert_equal("P.run/1..2", rows.frame_label({ kind = "def", module = "P", name = "run",
+    min_arity = 1, max_arity = 2 }), "arity when the parameters are unknown")
+end)
+
 -- ------- Behaviours and dispatch -------
 
 local DISPATCH = [[
