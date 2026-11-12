@@ -13,6 +13,7 @@ local local_git = require("gh_review.local_git")
 local local_store = require("gh_review.local_store")
 local turn = require("gh_review.turn")
 local agent = require("gh_review.agent")
+local send_panel = require("gh_review.send_panel")
 
 local M = {}
 
@@ -499,6 +500,164 @@ function M.start_review()
   end)
 end
 
+local function comments_of(t)
+  return state.get(state.get(t, "comments", {}), "nodes", {})
+end
+
+local function indent_body(body)
+  return (body:gsub("\r", ""):gsub("\n", "\n   "))
+end
+
+-- First line of a text, cut to `max` characters.
+local function excerpt(text, max)
+  local first = vim.split(text, "\n", { plain = true })[1] or ""
+  if #first > max then first = first:sub(1, max - 3) .. "..." end
+  return first
+end
+
+-- Show a change to the comment store: the thread list, signs, and files list.
+local function refresh_after_store_change()
+  if state.is_local_mode() then
+    state.set_threads(M.reanchor(state.get_local_info().root,
+      local_store.threads_for(state.get_merge_base_oid())))
+    diff.refresh_signs()
+    files.rerender()
+  else
+    require("gh_review.pr_drafts").refresh()
+  end
+end
+
+-- `dd` in a preview panel. Only comments written here can go: GitHub's are
+-- left alone. The first comment of a draft, note or local thread takes the
+-- whole thread with it; a later one goes alone.
+local function delete_comment(_, comment)
+  local id = comment and comment.comment_id
+  if not local_store.is_local_comment(id) then
+    print("That comment is on GitHub and is left alone")
+    return
+  end
+  local found = local_store.locate_comment(id)
+  if not found then return end
+  local owner = found.thread or found.reply
+  local kind = state.is_local_mode() and "comment" or (owner.agent_only and "agent note" or "draft")
+  local question
+  if found.kind == "thread" then
+    local n = #found.thread.comments.nodes
+    question = n > 1 and string.format("Delete this %s thread and its %d comments?", kind, n)
+      or string.format("Delete this %s?", kind)
+  elseif found.kind == "reply" then
+    question = string.format("Delete this %s reply?", kind)
+  else
+    question = string.format("Delete this reply from the %s thread?", kind)
+  end
+  vim.ui.select({ "Yes", "No" }, { prompt = question }, function(choice)
+    if choice ~= "Yes" then return end
+    local_store.delete_comment(id)
+    refresh_after_store_change()
+    send_panel.refresh()
+  end)
+end
+
+-- `e` in a preview panel: edit a comment written here in a small float.
+local function edit_comment(_, comment)
+  local id = comment and comment.comment_id
+  local found = local_store.is_local_comment(id) and local_store.locate_comment(id)
+  if not found then
+    print("That comment is on GitHub and is left alone")
+    return
+  end
+  send_panel.edit("Edit comment", (found.reply or found.comment).body, function(text)
+    local_store.update_comment(id, text)
+    refresh_after_store_change()
+  end)
+end
+
+-- What :GHReviewSubmit publishes, one item per draft: draft threads, then
+-- draft replies with the GitHub thread they answer. Agent notes are left out.
+-- Also returns spans in agent.message's shape, mapping lines to comments.
+function M.publish_preview()
+  local items = {}
+  for _, t in ipairs(local_store.threads()) do
+    if not state.get(t, "isResolved", false) and not t.agent_only then
+      local comments = {}
+      for j, c in ipairs(comments_of(t)) do
+        comments[#comments + 1] = { id = c.id, text = (j == 1 and "   Comment: " or "   Reply: ") .. indent_body(c.body) }
+      end
+      items[#items + 1] = { path = t.path or "", line = state.get(t, "line", 0) or 0, thread_id = t.id,
+        title = string.format("%s:%s", t.path, tostring(state.get(t, "line", "?"))), comments = comments }
+    end
+  end
+  local by_id = {}
+  for _, t in pairs(state.get_threads()) do by_id[t.id] = t end
+  for _, r in ipairs(local_store.replies()) do
+    if not r.agent_only then
+      local t = by_id[r.thread_id] or {}
+      local first = comments_of(t)[1]
+      local context = ""
+      if first then
+        local author = state.get(state.get(first, "author", {}), "login", "")
+        context = string.format(" · reply to %s: \"%s\"", author, excerpt(state.get(first, "body", ""), 50))
+      end
+      local line = state.get(t, "line", nil) or state.get(t, "originalLine", 0) or 0
+      items[#items + 1] = { path = t.path or "", line = line, thread_id = r.thread_id,
+        title = string.format("%s:%s%s", t.path or "?", tostring(line), context),
+        comments = { { id = r.id, text = "   Reply: " .. indent_body(r.body) } } }
+    end
+  end
+  table.sort(items, function(a, b)
+    if a.path ~= b.path then return a.path < b.path end
+    return a.line < b.line
+  end)
+
+  local add, finish = agent.builder()
+  local notes = local_store.agent_note_count()
+  add(string.format("Publishing %d draft%s to the PR%s:", #items, #items == 1 and "" or "s",
+    notes > 0 and string.format(" (%d agent note%s stay here)", notes, notes == 1 and "" or "s") or ""))
+  add("")
+  local spans = {}
+  for i, item in ipairs(items) do
+    local first, last = add(string.format("%d. %s", i, item.title))
+    local span = { thread_id = item.thread_id, first_line = first, comments = {} }
+    for j, c in ipairs(item.comments) do
+      local c_first, c_last = add(c.text)
+      last = c_last
+      span.comments[j] = { comment_id = c.id, index = j, first_line = c_first, last_line = c_last }
+    end
+    span.last_line = last
+    spans[#spans + 1] = span
+    add("")
+  end
+  return finish(), spans
+end
+
+-- The drafts :GHReviewSubmit would publish, and the review to publish them as.
+function M.open_publish_panel()
+  local drafts = require("gh_review.pr_drafts")
+  local function with_body(event)
+    return function()
+      vim.ui.input({ prompt = "Review body (optional): " }, function(body)
+        if body == nil then return end
+        drafts.publish(event, body)
+      end)
+    end
+  end
+  send_panel.open({
+    title = "Publish drafts",
+    preview = M.publish_preview,
+    on_delete = delete_comment,
+    on_edit = edit_comment,
+    is_empty = function()
+      if local_store.draft_count() == 0 then return "No drafts left to publish" end
+    end,
+    actions = {
+      { key = "c", label = "comment", fn = with_body("COMMENT") },
+      { key = "a", label = "approve", fn = function() drafts.publish("APPROVE", "") end },
+      { key = "r", label = "request changes", fn = with_body("REQUEST_CHANGES") },
+      { key = "u", label = "upload as pending (not published)", fn = function() drafts.publish(nil) end },
+    },
+  })
+end
+
 -- Submit a review. In a local scope this sends the comments to the agent.
 -- With PR drafts, it publishes them all as one review, or uploads them to a
 -- pending review without publishing.
@@ -512,25 +671,8 @@ function M.submit_review()
     return
   end
   local drafts = require("gh_review.pr_drafts")
-  local count = drafts.count()
-  if count > 0 then
-    local choices = { "Comment", "Approve", "Request changes", "Upload to GitHub as a pending review (not published)" }
-    local events = { "COMMENT", "APPROVE", "REQUEST_CHANGES", false }
-    vim.ui.select(choices, {
-      prompt = string.format("Publish %d draft%s as:", count, count == 1 and "" or "s"),
-    }, function(choice, idx)
-      if not choice then return end
-      local event = events[idx]
-      if event == false then
-        drafts.publish(nil)
-      elseif event == "APPROVE" then
-        drafts.publish(event, "")
-      else
-        vim.ui.input({ prompt = "Review body (optional): " }, function(body)
-          drafts.publish(event, body or "")
-        end)
-      end
-    end)
+  if drafts.count() > 0 then
+    M.open_publish_panel()
     return
   end
 
@@ -594,15 +736,32 @@ end
 -- Discard the pending review.
 function M.discard_review()
   local drafts = require("gh_review.pr_drafts")
-  if not state.is_local_mode() and drafts.count() > 0 then
-    vim.ui.select({ "Yes", "No" }, {
-      prompt = string.format("Delete %d local draft%s? (Nothing on GitHub changes.)", drafts.count(),
-        drafts.count() == 1 and "" or "s"),
-    }, function(choice)
-      if choice ~= "Yes" then return end
-      require("gh_review.local_store").clear_drafts()
+  local n_drafts, n_notes = drafts.count(), drafts.note_count()
+  if not state.is_local_mode() and n_drafts + n_notes > 0 then
+    local function plural(n, word) return string.format("%d %s%s", n, word, n == 1 and "" or "s") end
+    local choices, kinds = {}, {}
+    if n_drafts > 0 then
+      choices[#choices + 1] = "Drafts (" .. plural(n_drafts, "draft") .. ")"
+      kinds[#kinds + 1] = "drafts"
+    end
+    if n_notes > 0 then
+      choices[#choices + 1] = "Agent notes (" .. plural(n_notes, "note") .. ")"
+      kinds[#kinds + 1] = "notes"
+    end
+    if n_drafts > 0 and n_notes > 0 then
+      choices[#choices + 1] = "Both"
+      kinds[#kinds + 1] = "all"
+    end
+    choices[#choices + 1] = "Cancel"
+    vim.ui.select(choices, {
+      prompt = "Delete which local comments? (Nothing on GitHub changes.)",
+    }, function(_, idx)
+      local what = idx and kinds[idx]
+      if not what then return end
+      require("gh_review.local_store").clear_drafts(what)
       drafts.refresh()
-      print("Drafts deleted")
+      print(what == "notes" and "Agent notes deleted" or what == "all" and "Drafts and agent notes deleted"
+        or "Drafts deleted")
     end)
     return
   end
@@ -669,21 +828,74 @@ function M.refresh_threads()
   end)
 end
 
--- Threads to send: unsent local comments, or every unresolved PR thread.
-local function threads_to_send()
-  if state.is_local_mode() then
-    return M.reanchor(state.get_local_info().root, local_store.unsent())
+-- Local scopes send their unsent comments.
+local function local_threads_to_send()
+  return M.reanchor(state.get_local_info().root, local_store.unsent())
+end
+
+local function draft_category(item)
+  return state.get(item, "agent_only", false) == true and "agent" or "drafts"
+end
+
+-- PR scope: the kinds of comment that can be sent, with counts.
+--   github  unresolved GitHub threads, as they are on GitHub
+--   drafts  your draft threads and replies (what :GHReviewSubmit publishes)
+--   agent   agent notes (never published)
+function M.send_categories()
+  local is_draft_thread = require("gh_review.pr_drafts").is_draft_thread
+  local counts = { github = 0, drafts = 0, agent = 0 }
+  for _, t in pairs(state.get_threads()) do
+    local resolved = state.get(t, "isResolved", false)
+    if is_draft_thread(t.id) then
+      if not resolved then counts[draft_category(t)] = counts[draft_category(t)] + 1 end
+    else
+      if not resolved then counts.github = counts.github + 1 end
+      for _, c in ipairs(comments_of(t)) do
+        if state.get(c, "draft", false) == true then
+          counts[draft_category(c)] = counts[draft_category(c)] + 1
+        end
+      end
+    end
   end
+  return {
+    { key = "github", label = "GitHub threads, unresolved", count = counts.github },
+    { key = "drafts", label = "My drafts", count = counts.drafts, hl = "GHReviewThreadPending" },
+    { key = "agent", label = "Agent notes", count = counts.agent, hl = "GHReviewThreadAgent" },
+  }
+end
+
+-- The threads to send for the ticked categories. A draft reply or agent note
+-- on a GitHub thread brings that thread's GitHub comments with it as context.
+function M.threads_to_send(selected)
+  if state.is_local_mode() then return local_threads_to_send() end
+  local is_draft_thread = require("gh_review.pr_drafts").is_draft_thread
   local result = {}
   for _, t in pairs(state.get_threads()) do
-    if not state.get(t, "isResolved", false) then
-      result[#result + 1] = t
+    local resolved = state.get(t, "isResolved", false)
+    if is_draft_thread(t.id) then
+      if not resolved and selected[draft_category(t)] then result[#result + 1] = t end
+    else
+      local comments, added = {}, 0
+      for _, c in ipairs(comments_of(t)) do
+        if state.get(c, "draft", false) ~= true then
+          comments[#comments + 1] = c
+        elseif selected[draft_category(c)] then
+          comments[#comments + 1] = c
+          added = added + 1
+        end
+      end
+      if added > 0 or (selected.github and not resolved) then
+        local copy = vim.tbl_extend("force", {}, t)
+        copy.comments = { nodes = comments }
+        result[#result + 1] = copy
+      end
     end
   end
   return result
 end
 
-local function send_text(threads)
+-- The text for these threads; `spans` (optional) is filled as agent.message does.
+local function send_text(threads, spans)
   local header
   if not state.is_local_mode() then
     header = string.format("PR: https://%s/%s/%s/pull/%d",
@@ -692,17 +904,10 @@ local function send_text(threads)
   local root = state.get_local_info().root or local_git.root()
   -- PR threads are quoted from the working tree only when it is the PR's head.
   local quote_root = state.is_local_checkout() and root or nil
-  return agent.message(threads, { root = quote_root, header = header }), root
+  return agent.message(threads, { root = quote_root, header = header, spans = spans }), root
 end
 
--- Send comments to the running coding agent. Local comments are marked sent
--- once they reach one; PR threads stay as they are on GitHub.
-function M.send()
-  local threads = threads_to_send()
-  if #threads == 0 then
-    print(state.is_local_mode() and "No unsent comments" or "No unresolved threads")
-    return
-  end
+local function deliver(threads)
   local text, root = send_text(threads)
   agent.send(text, root, function(sent, where)
     if not sent then
@@ -715,24 +920,115 @@ function M.send()
       local ids = {}
       for _, t in ipairs(threads) do ids[#ids + 1] = t.id end
       local_store.mark_sent(ids)
-      state.set_threads(M.reanchor(state.get_local_info().root,
-        local_store.threads_for(state.get_merge_base_oid())))
-      diff.refresh_signs()
-      files.rerender()
+      refresh_after_store_change()
     end
     print(string.format("Sent %d comment thread%s to %s", #threads, #threads == 1 and "" or "s", where))
   end)
 end
 
--- Copy the comments M.send would send.
-function M.copy()
-  local threads = threads_to_send()
-  if #threads == 0 then
-    print("Nothing to copy")
-    return
-  end
+local function copy_threads(threads)
   agent.copy((send_text(threads)))
   print(string.format("Copied %d comment thread%s", #threads, #threads == 1 and "" or "s"))
+end
+
+-- Why there is nothing to show, or nil.
+local function nothing_to_send()
+  if state.is_local_mode() then
+    if #local_threads_to_send() == 0 then return "No unsent comments" end
+    return nil
+  end
+  local total = 0
+  for _, c in ipairs(M.send_categories()) do total = total + c.count end
+  if total == 0 then return "No unresolved threads or drafts" end
+  return nil
+end
+
+-- One line naming a thread, for the list of skipped items.
+local function thread_label(t)
+  local line = state.get(t, "line", nil) or state.get(t, "originalLine", 0)
+  local first = comments_of(t)[1]
+  local author = first and state.get(state.get(first, "author", {}), "login", "") or ""
+  local text = first and excerpt(state.get(first, "body", ""), 40) or ""
+  return string.format("%s:%s · %s: %s", t.path, tostring(line), author, text)
+end
+
+-- The threads to send, and those the panel's `-` left out of this send.
+local function send_selection(selected, skipped)
+  local threads, left_out = {}, {}
+  for _, t in ipairs(M.threads_to_send(selected)) do
+    if skipped[t.id] then
+      left_out[#left_out + 1] = t
+    else
+      threads[#threads + 1] = t
+    end
+  end
+  table.sort(left_out, function(a, b)
+    if a.path ~= b.path then return a.path < b.path end
+    return (state.get(a, "line", 0) or 0) < (state.get(b, "line", 0) or 0)
+  end)
+  return threads, left_out
+end
+
+-- The panel's preview: the exact text sent (skipped items are absent from it),
+-- the spans mapping its lines to comments, and the skipped items to list apart.
+local function send_preview(selected, skipped)
+  local threads, left_out = send_selection(selected, skipped)
+  local labels = {}
+  for _, t in ipairs(left_out) do labels[#labels + 1] = { thread_id = t.id, label = thread_label(t) } end
+  if #threads == 0 then
+    return (#labels > 0 and "Everything is skipped." or "Nothing ticked."), {}, labels
+  end
+  local spans = {}
+  local text = send_text(threads, spans)
+  return text, spans, labels
+end
+
+-- Open the panel that shows what will be sent; `actions` maps keys to what
+-- runs with the chosen threads.
+local function open_send_panel(title, actions)
+  local message = nothing_to_send()
+  if message then
+    print(message)
+    return
+  end
+  local panel_actions = {}
+  for _, a in ipairs(actions) do
+    panel_actions[#panel_actions + 1] = {
+      key = a.key, label = a.label,
+      fn = function(selected, skipped)
+        local threads = send_selection(selected, skipped)
+        if #threads == 0 then return print("Nothing to send") end
+        a.fn(threads)
+      end,
+    }
+  end
+  send_panel.open({
+    title = title,
+    categories = (not state.is_local_mode()) and M.send_categories or nil,
+    preview = send_preview,
+    actions = panel_actions,
+    on_delete = delete_comment,
+    on_edit = edit_comment,
+    skippable = true,
+    is_empty = nothing_to_send,
+  })
+end
+
+-- Send comments to the running coding agent, after a panel shows the text and
+-- (on a PR) lets you pick which kinds go. Local comments are marked sent once
+-- they reach an agent; PR threads stay as they are on GitHub.
+function M.send()
+  open_send_panel("Send to agent", {
+    { key = "<CR>", label = "send", fn = deliver },
+    { key = "y", label = "copy", fn = copy_threads },
+  })
+end
+
+-- Copy the comments M.send would send.
+function M.copy()
+  open_send_panel("Copy review", {
+    { key = "<CR>", label = "copy", fn = copy_threads },
+  })
 end
 
 -- Mark the last-turn baseline now, for agents gh-review can't watch.

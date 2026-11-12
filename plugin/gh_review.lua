@@ -67,6 +67,7 @@ end, { nargs = 0, desc = "Close the review" })
 vim.api.nvim_set_hl(0, "GHReviewThread", { default = true, ctermfg = "Blue", fg = "#58a6ff" })
 vim.api.nvim_set_hl(0, "GHReviewThreadResolved", { default = true, ctermfg = "Green", fg = "#3fb950" })
 vim.api.nvim_set_hl(0, "GHReviewThreadPending", { default = true, ctermfg = "Yellow", fg = "#d29922" })
+vim.api.nvim_set_hl(0, "GHReviewThreadAgent", { default = true, ctermfg = "Magenta", fg = "#bc8cff" })
 vim.api.nvim_set_hl(0, "GHReviewVirtText", { default = true, ctermfg = "Gray", fg = "#8b949e", italic = true })
 -- Stack view
 vim.api.nvim_set_hl(0, "GHReviewStackNew", { default = true, ctermfg = "Green", fg = "#3fb950" })

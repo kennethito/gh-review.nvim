@@ -86,7 +86,37 @@ end
 
 -- Save a comment in a local scope. It keeps the lines it covers, so the agent
 -- gets a quote even after the file moves on.
-local function submit_local_thread(body, path, line_num, start_line, side)
+-- In PR scope a comment goes to GitHub as a draft, or stays an agent note.
+local function destination_label(agent_only, locked)
+  local key = config.options.keymaps.thread.toggle_agent
+  local hint = (type(key) == "string" and not locked) and string.format(" (%s to switch)", key) or ""
+  return (agent_only and "→ agent only, never published" or "→ GitHub draft") .. hint
+end
+
+local function header_line(bufnr)
+  local base = vim.b[bufnr].gh_review_header or ""
+  if require("gh_review.pr_drafts").enabled() then
+    return base .. "  " .. destination_label(vim.b[bufnr].gh_review_agent_only, vim.b[bufnr].gh_review_agent_locked)
+  end
+  return base
+end
+
+local function toggle_agent()
+  local bufnr = state.get_thread_bufnr()
+  if bufnr == -1 or not require("gh_review.pr_drafts").enabled() then return end
+  if vim.b[bufnr].gh_review_agent_locked then
+    print(vim.b[bufnr].gh_review_agent_only and "This thread is an agent note: its replies stay with the agent"
+      or "This thread is your draft: replies are published with it")
+    return
+  end
+  vim.b[bufnr].gh_review_agent_only = not vim.b[bufnr].gh_review_agent_only
+  local modifiable = vim.bo[bufnr].modifiable
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { header_line(bufnr) })
+  vim.bo[bufnr].modifiable = modifiable
+end
+
+local function submit_local_thread(body, path, line_num, start_line, side, agent_only)
   local first = (start_line and start_line ~= vim.NIL) and start_line or line_num
   local source = side == "LEFT" and state.get_left_bufnr() or state.get_right_bufnr()
   local anchor = {}
@@ -101,6 +131,7 @@ local function submit_local_thread(body, path, line_num, start_line, side)
     anchor = anchor,
     anchor_total = line_num - first + 1,
     left_base = side == "LEFT" and state.get_merge_base_oid() or nil,
+    agent_only = (agent_only and not state.is_local_mode()) or nil,
   }, body)
   if state.is_local_mode() then
     state.set_thread(t.id, t)
@@ -108,7 +139,8 @@ local function submit_local_thread(body, path, line_num, start_line, side)
     print("Comment saved")
   else
     require("gh_review.pr_drafts").refresh()
-    print("Draft saved: :GHReviewSubmit publishes your drafts")
+    print(agent_only and "Agent note saved: it is never published"
+      or "Draft saved: :GHReviewSubmit publishes your drafts")
   end
   M.close_thread_buffer()
 end
@@ -121,7 +153,7 @@ local function submit_new_thread(body, bufnr)
 
   -- Local scopes and PR drafts both keep the comment on this machine.
   if state.is_local_mode() or require("gh_review.pr_drafts").enabled() then
-    submit_local_thread(body, path, line_num, start_line, side)
+    submit_local_thread(body, path, line_num, start_line, side, vim.b[bufnr].gh_review_agent_only)
     return
   end
 
@@ -260,13 +292,15 @@ local function submit_reply()
   elseif require("gh_review.pr_drafts").enabled() then
     local drafts = require("gh_review.pr_drafts")
     local store = require("gh_review.local_store")
+    local agent_only = vim.b[bufnr].gh_review_agent_only
     if drafts.is_draft_thread(thread_id) then
       store.reply(thread_id, body)
     else
-      store.add_reply(thread_id, vim.b[bufnr].gh_review_first_comment_id or "", body)
+      store.add_reply(thread_id, vim.b[bufnr].gh_review_first_comment_id or "", body, agent_only)
     end
     drafts.refresh()
-    print("Draft reply saved: :GHReviewSubmit publishes your drafts")
+    print(agent_only and "Agent note saved: it is never published"
+      or "Draft reply saved: :GHReviewSubmit publishes your drafts")
     M.close_thread_buffer()
   elseif state.is_review_active() then
     submit_review_reply(body, bufnr)
@@ -348,6 +382,7 @@ local ACTIONS = {
     { "i", function() vim.cmd("stopinsert") submit_reply() end, "Submit reply" },
   },
   resolve = { { "n", toggle_resolve, "Toggle resolved" } },
+  toggle_agent = { { "n", toggle_agent, "Switch between GitHub draft and agent note (PR)" } },
   close   = { { "n", function() M.close_thread_buffer() end, "Close thread" } },
   close_insert = {
     { "n", function() M.close_thread_buffer() end, "Close thread" },
@@ -397,11 +432,13 @@ local function show_thread(t)
   -- Build buffer content
   local lines = {}
 
+  local header
   if is_new then
-    lines[#lines + 1] = string.format("New comment on %s:%d  [New]", path, line_num)
+    header = string.format("New comment on %s:%d  [New]", path, line_num)
   else
-    lines[#lines + 1] = string.format("Thread on %s:%d  [%s]", path, line_num, status_label)
+    header = string.format("Thread on %s:%d  [%s]", path, line_num, status_label)
   end
+  lines[#lines + 1] = header
   lines[#lines + 1] = string.rep("─", 60)
 
   -- Show code context (the line(s) being commented on)
@@ -490,6 +527,15 @@ local function show_thread(t)
   vim.b[bufnr].gh_review_reply_start = reply_start
   vim.b[bufnr].gh_review_is_new = is_new
   vim.b[bufnr].gh_review_is_resolved = is_resolved
+  -- Where what you write goes. Replies on your own draft or agent-note thread
+  -- go wherever the thread goes, so the switch is locked there.
+  vim.b[bufnr].gh_review_header = header
+  vim.b[bufnr].gh_review_agent_only = t.agent_only and true or false
+  vim.b[bufnr].gh_review_agent_locked = (t.agent_only or require("gh_review.pr_drafts").is_draft_thread(thread_id))
+    and true or false
+  if require("gh_review.pr_drafts").enabled() then
+    vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, { header_line(bufnr) })
+  end
 
   -- Store the first comment id (needed for REST reply)
   if #comments > 0 then

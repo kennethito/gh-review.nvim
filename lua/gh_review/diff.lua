@@ -8,6 +8,9 @@ local unified = require("gh_review.unified")
 
 local M = {}
 
+-- The window showing the head pane, to notice jumps out of it (see follow).
+local right_winid = -1
+
 -- Each open gets a number; a content fetch that finishes after a newer open
 -- started is dropped, so quick ]s presses never show a stale file or line.
 local open_seq = 0
@@ -121,17 +124,22 @@ local function place_signs(path)
         local is_pending = false
         local comments_obj = state.get(t, "comments", {})
         local comments = state.get(comments_obj, "nodes", {})
-        if #comments > 0 then
-          local last_comment = comments[#comments]
+        local last_comment = comments[#comments]
+        if last_comment then
           local review = state.get(last_comment, "pullRequestReview", {})
           if type(review) == "table" and next(review) and state.get(review, "state", "") == "PENDING" then
             is_pending = true
           end
         end
+        -- A note kept for the agent, on its own thread or as the last reply.
+        local agent_note = (t.agent_only or (last_comment and last_comment.agent_only)) and true or false
 
         local sign_text = "CT"
         local sign_hl = "GHReviewThread"
-        if is_pending then
+        if agent_note and not state.is_local_mode() then
+          sign_text = "CA"
+          sign_hl = "GHReviewThreadAgent"
+        elseif is_pending then
           sign_text = "CP"
           sign_hl = "GHReviewThreadPending"
         elseif is_resolved then
@@ -151,7 +159,8 @@ local function place_signs(path)
             body = body:sub(1, 57) .. "..."
           end
           if author ~= "" and body ~= "" then
-            virt_text = {{ (from_base and "(base) " or "") .. author .. ": " .. body, "GHReviewVirtText" }}
+            local label = (from_base and "(base) " or "") .. ((agent_note and not state.is_local_mode()) and "(agent) " or "")
+            virt_text = {{ label .. author .. ": " .. body, "GHReviewVirtText" }}
           end
         end
 
@@ -694,6 +703,7 @@ local function show_diff(path, left_content, right_content, line, side)
     vim.cmd("noautocmd buffer " .. right_bufnr)
   end
   state.set_right_bufnr(right_bufnr)
+  right_winid = vim.api.nvim_get_current_win()
   setup_diff_buffer(right_bufnr, right_name, path, right_content, state.is_local_checkout())
   -- Drop what a unified view of this file left behind before redrawing.
   unified.clear(right_bufnr)
@@ -1027,6 +1037,7 @@ end
 -- a function on a call path into the change, where a diff would show nothing.
 function M.open_plain(path, line)
   if state.get_left_bufnr() ~= -1 then M.close_diff() end
+  right_winid = -1
   open_seq = open_seq + 1
   local fb = state.get_files_bufnr()
   local files_winid = fb ~= -1 and vim.fn.bufwinid(fb) or -1
@@ -1123,5 +1134,64 @@ end
 
 -- For the `?` help, which lists what each surface maps.
 M.ACTIONS = ACTIONS
+
+-- ------- Following jumps out of the head pane -------
+
+-- Undo what a diff set on a head buffer that has left its window (a jump
+-- replaced it): drawings, our keymaps, the diff-buffer flag.
+local function release(bufnr)
+  if bufnr == -1 or vim.fn.bufexists(bufnr) == 0 then return end
+  vim.b[bufnr].gh_review_diff = false
+  vim.api.nvim_buf_clear_namespace(bufnr, require("gh_review.stack.view").ns, 0, -1)
+  vim.api.nvim_buf_clear_namespace(bufnr, state.ns, 0, -1)
+  unified.clear(bufnr)
+  if vim.bo[bufnr].buftype == "" then
+    config.clear_keymaps(bufnr, "diff", ACTIONS)
+  end
+end
+
+-- A jump (gd, gF, :e, <C-o>) put another file in the head pane. A file in the
+-- change opens as a diff at the line jumped to; any other file ends the diff
+-- and stays as a plain file.
+function M.follow(winid, bufnr)
+  if winid ~= right_winid or not vim.api.nvim_win_is_valid(winid) then return end
+  if vim.api.nvim_win_get_buf(winid) ~= bufnr or bufnr == state.get_right_bufnr() then return end
+  -- Only while a diff is on screen: a check queued just before a new diff
+  -- started opening must not act on it.
+  if vim.bo[bufnr].buftype ~= "" or state.get_right_bufnr() == -1 or state.get_left_bufnr() == -1 then
+    return
+  end
+  local root = state.get_local_info().root or vim.fs.root(0, ".git")
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if not root or name:sub(1, #root + 1) ~= root .. "/" then return end
+  local path = name:sub(#root + 2)
+  local line = vim.api.nvim_win_get_cursor(winid)[1]
+
+  release(state.get_right_bufnr())
+  -- From here the new buffer is the head pane, so the diff code treats its
+  -- window as the one to reuse or tidy up.
+  state.set_right_bufnr(bufnr)
+  if require("gh_review.files").in_change(path) then
+    M.open(path, { line = line })
+  else
+    M.close_diff()
+    if vim.api.nvim_win_is_valid(winid) then
+      vim.wo[winid].winbar = ""
+      vim.fn.win_gotoid(winid)
+    end
+    right_winid = -1
+  end
+end
+
+vim.api.nvim_create_autocmd("BufEnter", {
+  group = vim.api.nvim_create_augroup("gh_review_follow", { clear = true }),
+  callback = function(ev)
+    if not config.options.diff_follow or right_winid == -1 then return end
+    local winid = vim.api.nvim_get_current_win()
+    if winid ~= right_winid or ev.buf == state.get_right_bufnr() then return end
+    -- After the jump has finished placing the cursor.
+    vim.schedule(function() M.follow(winid, ev.buf) end)
+  end,
+})
 
 return M

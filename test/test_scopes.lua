@@ -137,6 +137,36 @@ h.run_test("Refreshing keeps an open comment draft and the diff", function()
   thread.close_thread_buffer()
 end)
 
+h.run_test("Jumping from the head pane to another changed file opens it as a diff", function()
+  diff.open("a.txt")
+  repo.wait_for(function() return state.get_left_bufnr() ~= -1 and state.get_diff_path() == "a.txt" end, "a.txt")
+  vim.wait(50)
+  local win = vim.fn.bufwinid(state.get_right_bufnr())
+  vim.fn.win_gotoid(win)
+  -- What gd or gF does: another file in the same window, cursor placed.
+  vim.cmd("edit " .. vim.fn.fnameescape(dir .. "/e.txt"))
+  repo.wait_for(function() return state.get_diff_path() == "e.txt" and state.get_left_bufnr() ~= -1 end, "e.txt diff")
+  repo.wait_for(function() return vim.api.nvim_buf_get_name(state.get_right_bufnr()):find("e%.txt$") ~= nil end, "head pane")
+  h.assert_equal(dir .. "/e.txt", vim.api.nvim_buf_get_name(state.get_right_bufnr()))
+  h.assert_true(vim.wo[vim.fn.bufwinid(state.get_right_bufnr())].diff, "in diff mode")
+
+  -- And back again, as <C-o> would.
+  vim.fn.win_gotoid(vim.fn.bufwinid(state.get_right_bufnr()))
+  vim.cmd("edit " .. vim.fn.fnameescape(dir .. "/a.txt"))
+  repo.wait_for(function() return state.get_diff_path() == "a.txt" and state.get_left_bufnr() ~= -1 end, "back to a.txt")
+end)
+
+h.run_test("With diff_follow off, a jump leaves the diff alone", function()
+  require("gh_review.config").options.diff_follow = false
+  vim.fn.win_gotoid(vim.fn.bufwinid(state.get_right_bufnr()))
+  vim.cmd("edit " .. vim.fn.fnameescape(dir .. "/e.txt"))
+  vim.wait(200)
+  h.assert_equal("a.txt", state.get_diff_path())
+  require("gh_review.config").options.diff_follow = true
+  vim.cmd("buffer #")
+  vim.wait(100)
+end)
+
 h.run_test("The store survives a reload", function()
   local path = local_store.path_for(dir, "feature")
   h.assert_true(vim.uv.fs_stat(path) ~= nil, "store file written")
@@ -193,6 +223,7 @@ h.run_test("Send delivers unsent comments and marks them sent", function()
     cb(true, "stub agent")
   end
   gh_review.send()
+  require("gh_review.send_panel").act("<CR>")
   agent.send = original
 
   h.assert_equal(dir, delivered.root)
@@ -200,6 +231,122 @@ h.run_test("Send delivers unsent comments and marks them sent", function()
   h.assert_match("2%. a%.txt:4\n   > FOUR\n   Comment: Why uppercase%?", delivered.text)
   h.assert_equal(0, #local_store.unsent())
   h.assert_equal("turn · 1 thread", gh_review.statusline())
+end)
+
+-- Acting on one comment in the send panel (see also test_pr_drafts.lua).
+local send_panel = require("gh_review.send_panel")
+
+local function keys(lhs)
+  vim.api.nvim_feedkeys(vim.keycode(lhs), "x", false)
+end
+
+local function panel_lines()
+  return vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false)
+end
+
+local function goto_line(text)
+  for i, l in ipairs(panel_lines()) do
+    if l:find(text, 1, true) then
+      vim.api.nvim_win_set_cursor(0, { i, 0 })
+      return
+    end
+  end
+  error("no panel line containing " .. text)
+end
+
+local function has_line(text)
+  for _, l in ipairs(panel_lines()) do
+    if l:find(text, 1, true) then return true end
+  end
+  return false
+end
+
+local real_select = vim.ui.select
+local prompts = {}
+local function answer(choice)
+  prompts = {}
+  vim.ui.select = function(_, opts, cb)
+    prompts[#prompts + 1] = opts.prompt
+    cb(choice, choice == "Yes" and 1 or 2)
+  end
+end
+
+local function local_thread_on(path, line, anchor, ...)
+  local bodies = { ... }
+  local t = local_store.add_thread({ path = path, line = line, diffSide = "RIGHT", anchor = { anchor }, anchor_total = 1 },
+    bodies[1])
+  for i = 2, #bodies do local_store.reply(t.id, bodies[i]) end
+  return t
+end
+
+h.run_test("The send panel deletes local comments: a reply alone, a first comment with its thread", function()
+  local first = local_thread_on("a.txt", 1, "one", "First", "Second")
+  local_thread_on("a.txt", 3, "three", "Third")
+  h.assert_equal(2, #local_store.unsent())
+
+  gh_review.send()
+  h.assert_false(has_line("Why uppercase?"), "comments already sent are not shown, so not editable")
+  h.assert_match("dd delete · e edit · %- skip", panel_lines()[2])
+
+  goto_line("Reply (you): Second")
+  answer("Yes")
+  keys("dd")
+  h.assert_equal("Delete this reply from the comment thread?", prompts[1])
+  h.assert_false(has_line("Second"))
+  h.assert_true(has_line("Comment: First"), "the thread stays")
+  h.assert_equal(2, #local_store.unsent())
+
+  goto_line("Comment: First")
+  answer("No")
+  keys("dd")
+  h.assert_equal("Delete this comment?", prompts[1])
+  h.assert_true(has_line("Comment: First"), "No keeps it")
+  answer("Yes")
+  keys("dd")
+  h.assert_false(has_line("Comment: First"))
+  h.assert_equal(1, #local_store.unsent())
+  h.assert_equal(nil, next(state.get_thread(first.id)), "the signs' threads follow the store")
+  h.assert_equal(1, #state.get_thread(local_store.unsent()[1].id).comments.nodes)
+  h.assert_true(send_panel.is_open())
+  send_panel.close()
+end)
+
+h.run_test("e edits a local comment, and - leaves it out of one send without deleting it", function()
+  gh_review.send()
+  goto_line("Comment: Third")
+  keys("e")
+  local float = vim.api.nvim_get_current_buf()
+  h.assert_equal("Third", vim.api.nvim_buf_get_lines(float, 0, -1, false)[1])
+  vim.api.nvim_buf_set_lines(float, 0, -1, false, { "Third, reworded" })
+  vim.cmd("write")
+  h.assert_true(has_line("Comment: Third, reworded"))
+  h.assert_equal("Third, reworded", local_store.unsent()[1].comments.nodes[1].body)
+  h.assert_equal("Third, reworded", state.get_thread(local_store.unsent()[1].id).comments.nodes[1].body)
+
+  goto_line("Comment: Third, reworded")
+  keys("-")
+  h.assert_equal("Everything is skipped.", send_panel.preview_text())
+  h.assert_equal(1, #local_store.unsent(), "skipping deletes nothing")
+  local original = require("gh_review.agent").send
+  local sent = false
+  require("gh_review.agent").send = function(_, _, cb) sent = true cb(true, "stub") end
+  send_panel.act("<CR>")
+  require("gh_review.agent").send = original
+  h.assert_false(sent, "nothing to send while everything is skipped")
+  goto_line("Third, reworded")
+  keys("-")
+  h.assert_true(has_line("Comment: Third, reworded"))
+  send_panel.close()
+end)
+
+h.run_test("Deleting the last unsent comment closes the panel", function()
+  gh_review.send()
+  goto_line("Comment: Third, reworded")
+  answer("Yes")
+  keys("dd")
+  h.assert_false(send_panel.is_open())
+  h.assert_equal(0, #local_store.unsent())
+  vim.ui.select = real_select
 end)
 
 h.run_test("Turn baselines from another day show the date", function()
@@ -230,6 +377,7 @@ h.run_test("PR scope sends unresolved threads with the PR url and leaves them un
     cb(true, "stub agent")
   end
   gh_review.send()
+  require("gh_review.send_panel").act("<CR>")
   agent.send = original
 
   h.assert_match("^Code review comments from my editor:\nPR: https://github.com/testowner/testrepo/pull/42\n",

@@ -24,6 +24,9 @@ M.defaults = {
   pr_drafts = true,
   -- "split" (side by side) or "unified" (the head file with removed lines drawn in).
   diff_view = "split",
+  -- Jumping from the head pane (gd, gF, :e) to another changed file opens it
+  -- as a diff; to any other file ends the diff.
+  diff_follow = true,
   -- What to mark inside a changed line: "word", "char", or "off".
   diff_inline = "word",
   -- Where the files list sits, and its height (bottom) or width (left).
@@ -79,6 +82,7 @@ M.defaults = {
       close        = "q",
       close_insert = "<C-q>",
       help         = "g?",
+      toggle_agent = "ga",
     },
   },
 }
@@ -236,7 +240,7 @@ function M.setup(opts)
   for key in pairs(opts) do
     if key ~= "fold" and key ~= "keymaps" and key ~= "turn" and key ~= "stack"
       and key ~= "files_position" and key ~= "files_size" and key ~= "diff_view" and key ~= "pr_drafts"
-      and key ~= "diff_inline" then
+      and key ~= "diff_inline" and key ~= "diff_follow" then
       warn(string.format("unknown option %q (expected fold, keymaps, turn, stack, diff_view, pr_drafts, files_position, or files_size)", key))
       ok = false
     end
@@ -244,6 +248,10 @@ function M.setup(opts)
   if opts.diff_inline ~= nil and opts.diff_inline ~= "word" and opts.diff_inline ~= "char"
     and opts.diff_inline ~= "off" then
     warn('diff_inline must be "word", "char", or "off"')
+    ok = false
+  end
+  if opts.diff_follow ~= nil and type(opts.diff_follow) ~= "boolean" then
+    warn("diff_follow must be a boolean")
     ok = false
   end
   if opts.pr_drafts ~= nil and type(opts.pr_drafts) ~= "boolean" then

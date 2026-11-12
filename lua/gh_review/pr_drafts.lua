@@ -16,6 +16,10 @@ local M = {}
 -- The last threads fetched from GitHub, to re-merge drafts without a fetch.
 local github_threads = {}
 
+function M.github_threads()
+  return github_threads
+end
+
 function M.enabled()
   return config.options.pr_drafts and not state.is_local_mode() and state.get_pr_id() ~= ""
 end
@@ -53,7 +57,7 @@ function M.merged()
       t.comments.nodes = t.comments.nodes or {}
       table.insert(t.comments.nodes, {
         id = reply.id, body = reply.body, author = reply.author, createdAt = reply.createdAt,
-        pullRequestReview = { state = "PENDING" }, draft = true,
+        pullRequestReview = { state = "PENDING" }, draft = true, agent_only = reply.agent_only,
       })
     end
   end
@@ -72,6 +76,11 @@ end
 function M.count()
   if not config.options.pr_drafts or state.is_local_mode() or not local_store.is_loaded() then return 0 end
   return local_store.draft_count()
+end
+
+function M.note_count()
+  if not config.options.pr_drafts or state.is_local_mode() or not local_store.is_loaded() then return 0 end
+  return local_store.agent_note_count()
 end
 
 -- ------- Publishing -------
@@ -120,7 +129,8 @@ function M.publish(event, body, done)
   local uploaded = 0
 
   for _, t in ipairs(vim.deepcopy(local_store.threads())) do
-    if not t.isResolved then
+    -- Agent notes stay local: they are for the agent, not the PR.
+    if not t.isResolved and not t.agent_only then
       local comments = t.comments.nodes
       local first_comment_id = nil
       steps[#steps + 1] = function(next_step)
@@ -159,18 +169,20 @@ function M.publish(event, body, done)
   end
 
   for _, reply in ipairs(vim.deepcopy(local_store.replies())) do
-    steps[#steps + 1] = function(next_step)
-      graphql_step(graphql.MUTATION_ADD_REVIEW_COMMENT, {
-        pullRequestReviewId = state.get_pending_review_id(), threadId = reply.first_comment_id, body = reply.body,
-      }, function(result)
-        return ((((result or {}).data or {}).addPullRequestReviewComment or {}).comment or {}).id
-      end)(function(ok, err)
-        if ok then
-          local_store.remove_reply(reply.id)
-          uploaded = uploaded + 1
-        end
-        next_step(ok, err)
-      end)
+    if not reply.agent_only then
+      steps[#steps + 1] = function(next_step)
+        graphql_step(graphql.MUTATION_ADD_REVIEW_COMMENT, {
+          pullRequestReviewId = state.get_pending_review_id(), threadId = reply.first_comment_id, body = reply.body,
+        }, function(result)
+          return ((((result or {}).data or {}).addPullRequestReviewComment or {}).comment or {}).id
+        end)(function(ok, err)
+          if ok then
+            local_store.remove_reply(reply.id)
+            uploaded = uploaded + 1
+          end
+          next_step(ok, err)
+        end)
+      end
     end
   end
 

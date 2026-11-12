@@ -133,9 +133,21 @@ A quick-start sequence for either workflow: >
                                                              *:GHReviewSubmit*
 :GHReviewSubmit         Submit a review.  Prompts for the review action
                         (Comment, Approve, or Request changes) and an optional
-                        body.  If a pending review is active, it is submitted;
+                        body.  With drafts, a panel first lists every draft
+                        it publishes; `c` Comment, `a` Approve, `r` Request
+                        changes, `u` upload as a pending review.  If a pending review is active, it is submitted;
                         otherwise a review is created and submitted in one
                         step.
+                        In the drafts panel the cursor line belongs to one
+                        comment (a title line to its first comment):
+                          dd   delete it after a Yes/No.  A draft thread's
+                               first comment deletes the whole thread, a
+                               later one only that comment, a draft reply
+                               just the reply.
+                          e    edit it in a small float; `:w` saves, `q`
+                               cancels.
+                        The panel updates as you go and closes when no drafts
+                        are left.
 
                                                             *:GHReviewDiscard*
 :GHReviewDiscard        Discard the pending review.  Prompts for confirmation,
@@ -153,8 +165,15 @@ On a PR, `:w` / <C-s> in the comment buffer saves the comment or reply as a
 draft on this machine (`stdpath("data")/gh-review/drafts/`), not on GitHub.
 |:GHReviewSubmit| publishes all drafts as one review (Comment, Approve,
 Request changes) or uploads them to a pending review without publishing.
-|:GHReviewDiscard| deletes them.  `pr_drafts = false` posts each comment when
-written instead.
+|:GHReviewDiscard| deletes them (it asks: drafts, agent notes, or both).
+`pr_drafts = false` posts each comment when written instead.
+
+                                                    *gh-review-agent-notes*
+`ga` in the comment buffer switches a new comment or reply between a GitHub
+draft and an agent note: a note for your coding agent, never published.  The
+buffer's first line says which.  Notes show as `CA` with an "(agent)" label,
+are left out of |:GHReviewSubmit|, and are sent with |:GHReviewSend|.  On your
+own draft or note thread, replies follow the thread and the switch is locked.
 
                                                               *:GHReviewClose*
 :GHReviewClose          Close all review buffers and reset plugin state.
@@ -174,11 +193,38 @@ written instead.
                                                                *:GHReviewSend*
 :GHReviewSend           Paste the comments into a running coding agent.  In
                         a local scope: unsent comments, which are then marked
-                        sent.  In PR scope: every unresolved thread, left as
-                        it is on GitHub.  See |gh-review-agent|.
+                        sent.  In PR scope: what you tick, left as it is on
+                        GitHub.  A panel shows the exact text first:
+                          <CR>      send
+                          y         copy instead
+                          <Space>   tick the category under the cursor
+                          1 2 3     tick GitHub threads (unresolved), my
+                                    drafts, agent notes
+                          q <Esc>   cancel
+                        A draft reply or note on a GitHub thread brings that
+                        thread as context.  See |gh-review-agent|.
+                        The cursor line belongs to one comment (a title or
+                        quote line to the item's first comment):
+                          dd   delete it after a Yes/No: a draft, an agent
+                               note or a local comment.  The first comment
+                               of such a thread deletes the whole thread, a
+                               later one only that comment, a draft reply
+                               just the reply.  GitHub's own comments are
+                               left alone.
+                          e    edit it in a small float; `:w` saves, `q`
+                               cancels.
+                          -    leave that whole numbered item out of this
+                               send only, GitHub threads included; press it
+                               again, on the item or on its line under
+                               "Skipped for this send", to bring it back.
+                               Nothing is deleted, and the text sent is the
+                               text shown (skipped items are not in it).
+                        Counts and text update as you go; the panel closes
+                        when nothing is left.
 
                                                                *:GHReviewCopy*
-:GHReviewCopy           Copy the text |:GHReviewSend| would send.
+:GHReviewCopy           Copy the text |:GHReviewSend| would send, from the
+                        same panel (<CR> copies).
 
                                                                *:GHReviewTurn*
 :GHReviewTurn           Mark the last-turn baseline now: snapshot the working
@@ -445,6 +491,7 @@ Defaults, by surface: >lua
       close        = "q",
       close_insert = "<C-q>",
       help         = "g?",
+      toggle_agent = "ga",
     },
 <
 `comment` and `suggestion` each bind both normal and visual mode.  `submit`
@@ -490,6 +537,10 @@ STACK AND LAYOUT ~
     },
     pr_drafts = true,          keep PR comments local (|gh-review-drafts|)
     diff_view = "split",       or "unified" (|gh-review-unified|)
+    diff_follow = true,        a jump out of the head pane (gd, gF, :e,
+                               <C-o>) to another changed file opens it as a
+                               diff at that line; to any other file ends the
+                               diff and leaves the plain file.
     diff_inline = "word",      mark changed words in a line; "char" or "off".
                                Side by side this sets 'diffopt' inline:word
                                (Neovim 0.12+) while a review diff is open.

@@ -64,9 +64,30 @@ local function indent_body(body)
   return (body:gsub("\r", ""):gsub("\n", "\n   "))
 end
 
+-- Build text chunk by chunk, counting the lines each chunk covers (a comment
+-- body can span several). add(text) returns the first and last line (1-based)
+-- of the chunk; finish() returns the whole text. Shared with the publish
+-- preview so both can map a line back to its comment.
+function M.builder()
+  local out, n = {}, 0
+  local function add(text)
+    out[#out + 1] = text
+    local first = n + 1
+    n = n + 1 + select(2, text:gsub("\n", ""))
+    return first, n
+  end
+  return add, function() return table.concat(out, "\n") end
+end
+
 -- One numbered item per thread, ordered by path then line.
 -- opts.root: repo root, for quoting PR threads from disk.
 -- opts.header: an extra line under the title (e.g. the PR url).
+-- opts.spans: a list this fills, one entry per item, so a caller can map a
+-- line of the text back to the comment it came from:
+--   { thread_id, first_line, last_line, comments = { { comment_id, index,
+--     first_line, last_line } } }
+-- Lines are 1-based and relative to the returned text. The lines are counted
+-- as the text is built, so they cannot drift from it.
 function M.message(threads, opts)
   opts = opts or {}
   local sorted = vim.list_slice(threads)
@@ -75,9 +96,11 @@ function M.message(threads, opts)
     return (state.get(a, "line", 0) or 0) < (state.get(b, "line", 0) or 0)
   end)
 
-  local out = { "Code review comments from my editor:" }
-  if opts.header then out[#out + 1] = opts.header end
-  out[#out + 1] = ""
+  local add, finish = M.builder()
+
+  add("Code review comments from my editor:")
+  if opts.header then add(opts.header) end
+  add("")
 
   for i, t in ipairs(sorted) do
     local line = state.get(t, "line", nil) or state.get(t, "originalLine", 0)
@@ -85,7 +108,8 @@ function M.message(threads, opts)
     local range = (start_line and start_line ~= line) and string.format("%d-%d", start_line, line)
       or tostring(line)
     local base = state.get(t, "diffSide", "RIGHT") == "LEFT" and " (base)" or ""
-    out[#out + 1] = string.format("%d. %s:%s%s", i, t.path, range, base)
+    local item_first, item_last = add(string.format("%d. %s:%s%s", i, t.path, range, base))
+    local span = { thread_id = t.id, comments = {} }
 
     local quoted, total = t.anchor, t.anchor_total or (t.anchor and #t.anchor) or 0
     if not quoted and opts.root then
@@ -93,25 +117,31 @@ function M.message(threads, opts)
     end
     if quoted and #quoted > 0 then
       for _, l in ipairs(dedent(vim.list_slice(quoted, 1, 3))) do
-        out[#out + 1] = "   > " .. l
+        _, item_last = add("   > " .. l)
       end
-      if total > 3 then out[#out + 1] = "   > ..." end
+      if total > 3 then _, item_last = add("   > ...") end
     end
 
     for j, c in ipairs(comments_of(t)) do
       local body = indent_body(state.get(c, "body", ""))
+      local text
       if j == 1 then
-        out[#out + 1] = "   Comment: " .. body
+        text = "   Comment: " .. body
       else
         local author = state.get(state.get(c, "author", {}), "login", "")
-        out[#out + 1] = string.format("   Reply (%s): %s", author, body)
+        text = string.format("   Reply (%s): %s", author, body)
       end
+      local first, last = add(text)
+      item_last = last
+      span.comments[#span.comments + 1] = { comment_id = c.id, index = j, first_line = first, last_line = last }
     end
-    out[#out + 1] = ""
+    span.first_line, span.last_line = item_first, item_last
+    if opts.spans then opts.spans[#opts.spans + 1] = span end
+    add("")
   end
 
-  out[#out + 1] = "Make the requested changes and answer any questions. Reply per item."
-  return table.concat(out, "\n")
+  add("Make the requested changes and answer any questions. Reply per item.")
+  return finish()
 end
 
 -- ------- herdr -------

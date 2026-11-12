@@ -175,10 +175,12 @@ end
 
 -- A draft reply to a GitHub thread. first_comment_id is what the reply
 -- mutation takes as inReplyTo.
-function M.add_reply(thread_id, first_comment_id, body)
+-- agent_only: a note for the agent on a GitHub thread, never published.
+function M.add_reply(thread_id, first_comment_id, body, agent_only)
   local reply = new_comment(body)
   reply.thread_id = thread_id
   reply.first_comment_id = first_comment_id
+  reply.agent_only = agent_only or nil
   data.replies[#data.replies + 1] = reply
   M.save()
   return reply
@@ -212,18 +214,98 @@ function M.remove_reply(id)
   M.save()
 end
 
+-- Comments written here have ids "local_comment_N"; GitHub's never match.
+function M.is_local_comment(id)
+  return type(id) == "string" and id:find("^local_comment_") ~= nil
+end
+
+-- Where a comment lives, by id:
+--   { kind = "reply",   reply }            a draft reply to a GitHub thread
+--   { kind = "thread",  thread, comment }  the first comment of a thread
+--   { kind = "comment", thread, comment }  a later comment of a thread
+-- Deleting a "thread" comment deletes the whole thread.
+function M.locate_comment(id)
+  if not data then return nil end
+  for _, r in ipairs(data.replies) do
+    if r.id == id then return { kind = "reply", reply = r } end
+  end
+  for _, t in ipairs(data.threads) do
+    for i, c in ipairs(t.comments.nodes) do
+      if c.id == id then
+        return { kind = i == 1 and "thread" or "comment", thread = t, comment = c }
+      end
+    end
+  end
+  return nil
+end
+
+-- Delete a comment as described by locate_comment; returns its kind, or nil
+-- when there is no such comment.
+function M.delete_comment(id)
+  local found = M.locate_comment(id)
+  if not found then return nil end
+  if found.kind == "reply" then
+    M.remove_reply(id)
+  elseif found.kind == "thread" then
+    M.remove_thread(found.thread.id)
+  else
+    local nodes = found.thread.comments.nodes
+    for i, c in ipairs(nodes) do
+      if c.id == id then
+        table.remove(nodes, i)
+        break
+      end
+    end
+    M.save()
+  end
+  return found.kind
+end
+
+-- Replace a comment's body (in a thread or a draft reply).
+function M.update_comment(id, body)
+  local found = M.locate_comment(id)
+  if not found then return false end
+  (found.reply or found.comment).body = body
+  M.save()
+  return true
+end
+
 -- PR drafts not yet published: unresolved draft threads and draft replies.
+-- PR drafts waiting to be published: agent notes never are.
 function M.draft_count()
   if not data then return 0 end
-  local n = #data.replies
+  local n = 0
+  for _, r in ipairs(data.replies) do
+    if not r.agent_only then n = n + 1 end
+  end
   for _, t in ipairs(data.threads) do
-    if not t.isResolved then n = n + 1 end
+    if not t.isResolved and not t.agent_only then n = n + 1 end
   end
   return n
 end
 
-function M.clear_drafts()
-  data.threads, data.replies = {}, {}
+-- Notes kept for the agent only (threads and replies).
+function M.agent_note_count()
+  if not data then return 0 end
+  local n = 0
+  for _, r in ipairs(data.replies) do
+    if r.agent_only then n = n + 1 end
+  end
+  for _, t in ipairs(data.threads) do
+    if not t.isResolved and t.agent_only then n = n + 1 end
+  end
+  return n
+end
+
+-- Delete PR drafts (what: "drafts"), agent notes ("notes"), or both ("all").
+function M.clear_drafts(what)
+  what = what or "all"
+  local function keep(item)
+    if what == "all" then return false end
+    return (item.agent_only and true or false) == (what == "drafts")
+  end
+  data.threads = vim.tbl_filter(keep, data.threads)
+  data.replies = vim.tbl_filter(keep, data.replies)
   M.save()
 end
 

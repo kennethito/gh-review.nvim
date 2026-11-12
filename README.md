@@ -65,6 +65,7 @@ require("gh_review").setup({
   pr_drafts = true,          -- keep PR comments local until :GHReviewSubmit
   diff_view = "split",       -- or "unified"
   diff_inline = "word",      -- mark changed words in a line: "word", "char", or "off"
+  diff_follow = true,        -- a jump (gd, gF, :e) to another changed file opens it as a diff
   files_position = "bottom", -- or "left"
   files_size = { bottom = 12, left = 50 },
   keymaps = {
@@ -114,6 +115,7 @@ require("gh_review").setup({
       resolve      = "<C-r>",
       close        = "q",
       close_insert = "<C-q>",
+      toggle_agent = "ga",
     },
   },
 })
@@ -192,7 +194,11 @@ A PR number refers to a PR in the clone’s base repo — the same repo `gh pr l
 
 On a PR, writing a comment or reply (`:w` or `<C-s>` in the comment buffer) saves it as a **draft on this machine**, under Neovim's data directory (`stdpath("data")/gh-review/drafts/`). Drafts show as pending (`CP`), survive restarts, and work with or without a checkout. Nothing is sent to GitHub, and nobody is notified.
 
-`:GHReviewSubmit` publishes every draft as one review: Comment, Approve, or Request changes, with an optional summary. It can instead upload them to a pending review on GitHub without publishing (visible only to you, like GitHub's "Start a review"). If publishing stops part way, the drafts not yet on GitHub stay drafts and `:GHReviewSubmit` retries. `:GHReviewDiscard` deletes the drafts; resolving a draft thread keeps it out of publishing.
+`:GHReviewSubmit` first shows every draft it will publish, then publishes them as one review: `c` Comment, `a` Approve, or `r` Request changes, with an optional summary. It can instead upload them to a pending review on GitHub without publishing (visible only to you, like GitHub's "Start a review"). If publishing stops part way, the drafts not yet on GitHub stay drafts and `:GHReviewSubmit` retries. `:GHReviewDiscard` asks what to delete: drafts, agent notes, or both; resolving a draft thread keeps it out of publishing.
+
+In that panel the cursor line belongs to one comment (a title line to its first comment). `dd` deletes it after a Yes/No: the first comment of a draft thread deletes the whole thread, a later one only that comment, a draft reply just the reply. `e` edits it in a small float (`:w` saves, `q` cancels). The list and counts update as you go, and the panel closes once no drafts are left.
+
+**Agent notes.** `ga` in the comment buffer switches a new comment or reply between a GitHub draft and an **agent note**: a note for your coding agent that is never published (the buffer's first line says which). Notes show as `CA` with an "(agent)" label, are left out of `:GHReviewSubmit`, and go to the agent with `:GHReviewSend`. Replies on your own draft or note thread follow the thread, so the switch is locked there.
 
 Set `pr_drafts = false` to post each comment when you write it, as upstream gh-review does.
 
@@ -213,7 +219,8 @@ Review your own working tree, or an agent's changes, the same way: no PR and no 
   1. **herdr**: an agent in the same herdr workspace (one in this repo first; you pick if there are several). An agent waiting at a permission prompt is skipped, since the prompt would swallow the paste.
   2. **[reviewr.nvim](https://github.com/paul-enz/reviewr.nvim)**, if installed: agents in Neovim terminals, tmux, Rex, or WezTerm.
   3. The clipboard.
-- In PR scope, `:GHReviewSend` sends every unresolved thread (the whole conversation) the same way, and leaves GitHub as it is. `:GHReviewCopy` copies instead of sending.
+- `:GHReviewSend` first opens a panel with the exact text it will send; `<CR>` sends it, `y` copies it, `q` cancels. In PR scope the panel has a checkbox per kind of comment, each with its count: unresolved GitHub threads (the whole conversation), your drafts, and agent notes. `<Space>` (or `1`–`3`) ticks one, and the text updates as you do. A draft reply or note on a GitHub thread brings that thread with it, so the agent sees what it answers. Sending leaves GitHub as it is. `:GHReviewCopy` opens the same panel to copy instead.
+  The cursor line in the panel belongs to one comment (a title or quote line to its item's first comment): `dd` deletes it after a Yes/No (a draft, an agent note or a local comment; the first comment of such a thread takes the whole thread with it, a later one goes alone, and GitHub's own comments are left alone), `e` edits it in a small float (`:w` saves, `q` cancels), and `-` leaves that whole numbered item out of this send only, GitHub threads included. Skipped items leave the text and are listed under it, where `-` brings one back; nothing is deleted, and the text sent is always the text shown.
 
 **Last turn.** Inside herdr, gh-review watches the agents in the worktree while Neovim runs and snapshots the worktree when they start working (`refs/worktree/gh-review/turn-base`); when the turn ends, an open turn review refreshes. Otherwise it uses the newest baseline left by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr) or reviewr.nvim, or one you mark yourself with `:GHReviewTurn` before prompting.
 

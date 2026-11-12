@@ -190,4 +190,34 @@ h.run_test("With neither, the text goes to the clipboard", function()
   h.assert_equal("clipboard review", vim.fn.getreg('"'))
 end)
 
+h.run_test("Spans map each line of the message to its thread and comment", function()
+  local function with_ids(t, id, ...)
+    t.id = id
+    for i, c in ipairs(t.comments.nodes) do c.id = id .. "_c" .. i end
+    return t
+  end
+  local spans = {}
+  local text = agent.message({
+    with_ids(local_thread({ path = "b.lua", line = 9, anchor = { "x" } }, "Why?"), "tb"),
+    with_ids(local_thread({ path = "a.lua", line = 7, anchor = { "a", "b" } }, "one\ntwo", "Done"), "ta"),
+  }, { header = "PR: url", spans = spans })
+  local lines = vim.split(text, "\n", { plain = true })
+  h.assert_equal(2, #spans)
+  h.assert_equal("ta", spans[1].thread_id, "spans follow the sorted order")
+  h.assert_equal("1. a.lua:7", lines[spans[1].first_line])
+  h.assert_equal("   Comment: one", lines[spans[1].comments[1].first_line])
+  h.assert_equal("   two", lines[spans[1].comments[1].last_line], "a body keeps all its lines")
+  h.assert_equal("   Reply (agent): Done", lines[spans[1].comments[2].first_line])
+  h.assert_equal(spans[1].comments[2].last_line, spans[1].last_line)
+  h.assert_equal("ta_c2", spans[1].comments[2].comment_id)
+  h.assert_equal(2, spans[1].comments[2].index)
+  h.assert_equal("2. b.lua:9", lines[spans[2].first_line])
+  h.assert_equal("", lines[spans[2].last_line + 1], "a blank line separates items")
+end)
+
+h.run_test("Collecting spans does not change the text", function()
+  local threads = { local_thread({ path = "a.lua", line = 1, anchor = { "x" } }, "Hm\nthere") }
+  h.assert_equal(agent.message(threads), agent.message(threads, { spans = {} }))
+end)
+
 h.write_results("/tmp/gh_review_test_agent.txt")
