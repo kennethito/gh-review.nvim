@@ -159,7 +159,7 @@ h.run_test("Unified: the cursor line on an added line has its own colour", funct
   vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", {})
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   local hl = vim.api.nvim_get_hl(0, { name = "GHReviewUnifiedCursorLine", link = false })
-  h.assert_equal(0x4a6176, hl.bg, "DiffAdd lifted a fifth towards the text colour")
+  h.assert_equal(0x12303e, hl.bg, "DiffAdd pushed 15% away from the text colour")
 
   local right = state.get_right_bufnr()
   local win = vim.fn.bufwinid(right)

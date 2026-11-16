@@ -81,8 +81,10 @@ vim.api.nvim_set_hl(0, "GHReviewStackData", { default = true, ctermfg = "Magenta
 vim.api.nvim_set_hl(0, "GHReviewStackShared", { default = true, ctermfg = "Red", fg = "#ff7b72", bold = true })
 
 -- The cursor line on an added line in the unified view: the colour scheme's
--- DiffAdd background lifted a fifth of the way towards its text colour, so it
--- stands out from the added lines around it in any scheme. Recomputed when
+-- DiffAdd background pushed 15% away from the text colour (linear
+-- extrapolation), so it stays distinct from the added lines around it, darkens
+-- in dark schemes and lightens in light ones, and dim text (comments, doc
+-- strings) gets more contrast on the cursor line, not less. Recomputed when
 -- the colour scheme changes; a user-defined GHReviewUnifiedCursorLine wins.
 local function unified_cursor_hl()
   local existing = vim.api.nvim_get_hl(0, { name = "GHReviewUnifiedCursorLine", create = false })
@@ -97,11 +99,12 @@ local function unified_cursor_hl()
     local out = 0
     for shift = 16, 0, -8 do
       local x, y = bit.band(bit.rshift(a, shift), 0xff), bit.band(bit.rshift(b, shift), 0xff)
-      out = out + bit.lshift(math.floor(x + (y - x) * t + 0.5), shift)
+      local v = math.max(0, math.min(255, math.floor(x + (y - x) * t + 0.5)))
+      out = out + bit.lshift(v, shift)
     end
     return out
   end
-  vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", { default = true, bg = mix(add.bg, normal.fg, 0.2) })
+  vim.api.nvim_set_hl(0, "GHReviewUnifiedCursorLine", { default = true, bg = mix(add.bg, normal.fg, -0.15) })
 end
 unified_cursor_hl()
 vim.api.nvim_create_autocmd("ColorScheme", {
