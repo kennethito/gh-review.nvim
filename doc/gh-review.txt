@@ -365,6 +365,9 @@ Mappings:
 
 <CR>                    Open side-by-side diff for the file under cursor.
 <Space>                 Toggle the reviewed state of the file under cursor.
+                        On a folder row (tree layout): mark every file under
+                        it reviewed, or unmark them all if all already are.
+T                       Toggle the flat list / folder tree (`files_view`).
 q                       Close the files list.
 gf                      Close the files list (same as q).
 R                       Refresh review threads from GitHub.  In a local
@@ -373,7 +376,9 @@ R                       Refresh review threads from GitHub.  In a local
 S                       Send comments to a coding agent (|:GHReviewSend|).
 p b u t                 Scope: PR, branch, uncommitted, last turn.
 s                       Toggle the stack view (|gh-review-stack|).
-<Tab>                   Stack view: fold or unfold the frame under the
+<Tab>                   Tree layout: fold or unfold the folder under the
+                        cursor (<CR> on a folder does too).
+                        Stack view: fold or unfold the frame under the
                         cursor and what it calls.  Every level folds, so
                         |zM| and |zr| collapse or open a level across all
                         stacks; folds survive redraws.  The fold column
@@ -482,6 +487,7 @@ Defaults, by surface: >lua
       toggle_stack      = "s",
       toggle_fold       = "<Tab>",
       toggle_position   = "P",
+      toggle_tree       = "T",
       help              = "?",
       toggle_view       = "gu",
     },
@@ -545,6 +551,12 @@ STACK AND LAYOUT ~
                                Side by side this sets 'diffopt' inline:word
                                (Neovim 0.12+) while a review diff is open.
     files_position = "bottom", or "left"
+    files_view = "flat",       or "tree": the files grouped in folders that
+                               fold (<Tab>, or <CR> on a folder).  `T` in the
+                               list switches for the session.  A folder that
+                               holds only one folder shows merged with it
+                               (`lua/gh_review/`), with its file count and
+                               total +/-.
     files_size = { bottom = 12, left = 50 },
 
 ==============================================================================

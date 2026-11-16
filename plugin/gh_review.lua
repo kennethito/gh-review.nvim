@@ -69,6 +69,8 @@ vim.api.nvim_set_hl(0, "GHReviewThreadResolved", { default = true, ctermfg = "Gr
 vim.api.nvim_set_hl(0, "GHReviewThreadPending", { default = true, ctermfg = "Yellow", fg = "#d29922" })
 vim.api.nvim_set_hl(0, "GHReviewThreadAgent", { default = true, ctermfg = "Magenta", fg = "#bc8cff" })
 vim.api.nvim_set_hl(0, "GHReviewVirtText", { default = true, ctermfg = "Gray", fg = "#8b949e", italic = true })
+-- Files list: folder rows in the tree layout
+vim.api.nvim_set_hl(0, "GHReviewFilesDir", { default = true, link = "Directory" })
 -- Stack view
 vim.api.nvim_set_hl(0, "GHReviewStackNew", { default = true, ctermfg = "Green", fg = "#3fb950" })
 vim.api.nvim_set_hl(0, "GHReviewStackChanged", { default = true, ctermfg = "Yellow", fg = "#d29922" })

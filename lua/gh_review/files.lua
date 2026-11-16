@@ -11,25 +11,39 @@ local ns = vim.api.nvim_create_namespace("gh_review_files")
 
 -- "files" lists the changed files; "stack" shows the call stacks into them.
 local mode = "files"
+-- The layout the last render drew ("flat", "tree" or "stack"), to know when
+-- the folds belong to another one.
+local last_layout = nil
 -- Per files buffer, the fold level of each line in stack mode (see foldexpr).
 local fold_levels = {}
 
--- Fold levels from each line's depth in the stack. A line whose next row is
--- deeper starts a fold (">N"); others sit at their depth. Section titles and
--- header lines are depth 0, which ends every fold.
+-- The depth of a line for folding: a stack row's depth in the stack, or a
+-- tree item's depth in the folder tree. Section titles and header lines are 0.
+local function item_depth(item)
+  if not item then return 0 end
+  local row = item.row
+  if row then return row.kind ~= "section" and (row.depth or 0) or 0 end
+  return item.depth or 0
+end
+
+-- Only frames and folders can hold a fold; a file row never does.
+local function foldable(item)
+  if not item then return false end
+  if item.row then return item.row.kind ~= "section" end
+  return item.kind == "dir"
+end
+
+-- Fold levels from each line's depth in the stack or the folder tree. A line
+-- whose next row is deeper starts a fold (">N"); others sit at their depth.
+-- Section titles and header lines are depth 0, which ends every fold.
 function M.fold_levels(line_items, count)
   local depths = {}
-  for lnum = 1, count do
-    local item = line_items[lnum]
-    local row = item and item.row
-    depths[lnum] = (row and row.kind ~= "section") and (row.depth or 0) or 0
-  end
+  for lnum = 1, count do depths[lnum] = item_depth(line_items[lnum]) end
   local levels = {}
   for lnum = 1, count do
     local d = depths[lnum]
     local next_depth = depths[lnum + 1]
-    local row = (line_items[lnum] or {}).row
-    if row and row.kind ~= "section" and next_depth and next_depth > d then
+    if foldable(line_items[lnum]) and next_depth and next_depth > d then
       levels[lnum] = ">" .. (d + 1)
     else
       levels[lnum] = tostring(d)
@@ -44,6 +58,7 @@ function M.foldexpr()
 end
 
 -- A closed frame keeps its own line and colours, and says how much is folded.
+-- A closed folder in the file tree keeps just its line.
 function M.foldtext()
   local bufnr = vim.api.nvim_get_current_buf()
   local row = vim.v.foldstart - 1
@@ -61,14 +76,23 @@ function M.foldtext()
       start = i
     end
   end
-  local hidden = vim.v.foldend - vim.v.foldstart
-  chunks[#chunks + 1] = { string.format("   ··· %d frame%s", hidden, hidden == 1 and "" or "s"), "Comment" }
+  -- A closed folder is just its own row, which already carries its totals.
+  if mode == "stack" then
+    local hidden = vim.v.foldend - vim.v.foldstart
+    chunks[#chunks + 1] = { string.format("   ··· %d frame%s", hidden, hidden == 1 and "" or "s"), "Comment" }
+  end
   return chunks
 end
--- What each buffer line stands for: { kind = "file", path } or a stack item.
+-- What each buffer line stands for: { kind = "file", path } or
+-- { kind = "dir", path, depth } in the tree, or a stack item.
 local items = {}
 
 function M.mode() return mode end
+
+-- The file list's layout: "flat" or "tree". The tree is a variant of the
+-- "files" mode, so the stack view comes and goes without losing the choice.
+function M.view() return config.options.files_view end
+local function tree_layout() return mode == "files" and config.options.files_view == "tree" end
 
 local function change_type_to_flag(change_type)
   if change_type == "ADDED" then return "A"
@@ -93,9 +117,89 @@ function M.title()
     info.branch or "", info.base_label or "", state.get_merge_base_oid():sub(1, 7))
 end
 
+-- Folder tree of the changed files: directories first, then files, each
+-- alphabetical. A folder whose only child is another folder is merged with it
+-- ("lua/gh_review/"). Returns rows in display order:
+--   { kind = "dir", name, path, depth, count, additions, deletions, paths }
+--   { kind = "file", file, name, path, depth }
+function M.build_tree(files)
+  local root = { dirs = {}, files = {} }
+  for _, f in ipairs(files) do
+    local path = state.get(f, "path", "")
+    local parts = vim.split(path, "/", { plain = true })
+    local node = root
+    for i = 1, #parts - 1 do
+      local child = node.dirs[parts[i]]
+      if not child then
+        child = { name = parts[i], dirs = {}, files = {} }
+        node.dirs[parts[i]] = child
+      end
+      node = child
+    end
+    node.files[#node.files + 1] = { file = f, name = parts[#parts], path = path }
+  end
+
+  local rows = {}
+  -- Appends this node's rows and returns the totals under it.
+  local function totals_of(node, out)
+    local total = { count = 0, additions = 0, deletions = 0, paths = {} }
+    local function add(t)
+      total.count = total.count + t.count
+      total.additions = total.additions + t.additions
+      total.deletions = total.deletions + t.deletions
+      vim.list_extend(total.paths, t.paths)
+    end
+    local names = vim.tbl_keys(node.dirs)
+    table.sort(names)
+    for _, name in ipairs(names) do
+      local dir = node.dirs[name]
+      local label = name
+      -- Fold a chain of folders that each hold only one folder into one row.
+      while #dir.files == 0 and vim.tbl_count(dir.dirs) == 1 do
+        local only = next(dir.dirs)
+        label = label .. "/" .. only
+        dir = dir.dirs[only]
+      end
+      dir.label = label
+      local children = {}
+      local sub = totals_of(dir, children)
+      add(sub)
+      out[#out + 1] = { dir = dir, label = label, totals = sub, children = children }
+    end
+    table.sort(node.files, function(a, b) return a.name < b.name end)
+    for _, entry in ipairs(node.files) do
+      local f = entry.file
+      local t = { count = 1, additions = state.get(f, "additions", 0), deletions = state.get(f, "deletions", 0),
+        paths = { entry.path } }
+      add(t)
+      out[#out + 1] = { file = f, name = entry.name, path = entry.path }
+    end
+    return total
+  end
+
+  local top = {}
+  totals_of(root, top)
+  -- Flatten, tracking each folder's full path and depth.
+  local function flatten(list, prefix, depth)
+    for _, entry in ipairs(list) do
+      if entry.dir then
+        local path = prefix == "" and entry.label or (prefix .. "/" .. entry.label)
+        local t = entry.totals
+        rows[#rows + 1] = { kind = "dir", name = entry.label, path = path, depth = depth,
+          count = t.count, additions = t.additions, deletions = t.deletions, paths = t.paths }
+        flatten(entry.children, path, depth + 1)
+      else
+        rows[#rows + 1] = { kind = "file", file = entry.file, name = entry.name, path = entry.path, depth = depth }
+      end
+    end
+  end
+  flatten(top, "", 0)
+  return rows
+end
+
 local function file_lines()
   local files = state.get_changed_files()
-  local lines, line_items = {}, {}
+  local lines, line_items, hls = {}, {}, {}
   lines[#lines + 1] = string.format("Files changed (%d)", #files)
   local note = state.get_local_info().note
   if not state.is_local_mode() then
@@ -107,7 +211,9 @@ local function file_lines()
   end
   lines[#lines + 1] = note or ""
 
-  for _, f in ipairs(files) do
+  -- One row per file; in the tree, indented under its folder and showing its
+  -- basename. `name` and `depth` are the flat list's path and 0.
+  local function file_row(f, name, depth)
     local flag = change_type_to_flag(state.get(f, "changeType", "MODIFIED"))
     local additions = state.get(f, "additions", 0)
     local deletions = state.get(f, "deletions", 0)
@@ -121,10 +227,45 @@ local function file_lines()
     end
 
     local checkbox = state.is_file_checked(path) and "[x]" or "[ ]"
-    lines[#lines + 1] = string.format("%s +%-4d -%-4d %s  %s%s", checkbox, additions, deletions, flag, path, thread_info)
-    line_items[#lines] = { kind = "file", path = path }
+    lines[#lines + 1] = string.format("%s +%-4d -%-4d %s  %s%s%s", checkbox, additions, deletions, flag,
+      string.rep("  ", depth), name, thread_info)
+    line_items[#lines] = { kind = "file", path = path, depth = depth }
   end
-  return lines, line_items, {}
+
+  if not tree_layout() then
+    for _, f in ipairs(files) do
+      local path = state.get(f, "path", "")
+      file_row(f, path, 0)
+    end
+    return lines, line_items, hls
+  end
+
+  for _, row in ipairs(M.build_tree(files)) do
+    if row.kind == "file" then
+      file_row(row.file, row.name, row.depth)
+    else
+      local viewed = 0
+      for _, p in ipairs(row.paths) do
+        if state.is_file_checked(p) then viewed = viewed + 1 end
+      end
+      local checkbox = viewed == row.count and "[x]" or "[ ]"
+      local head = string.format("%s +%-4d -%-4d    %s", checkbox, row.additions, row.deletions,
+        string.rep("  ", row.depth))
+      local name = row.name .. "/"
+      local tail = string.format("  (%d file%s)", row.count, row.count == 1 and "" or "s")
+      lines[#lines + 1] = head .. name .. tail
+      line_items[#lines] = { kind = "dir", path = row.path, depth = row.depth }
+      -- hls rows are 0-based body lines. The syntax file colours file rows;
+      -- a folder row is coloured here, so it survives being folded closed.
+      local r = #lines - 1
+      local plus_end = 4 + #string.format("+%-4d", row.additions)
+      hls[#hls + 1] = { r, 4, 4 + #tostring(row.additions) + 1, "ghReviewAdditions" }
+      hls[#hls + 1] = { r, plus_end + 1, plus_end + 1 + #tostring(row.deletions) + 1, "ghReviewDeletions" }
+      hls[#hls + 1] = { r, #head, #head + #name, "GHReviewFilesDir" }
+      hls[#hls + 1] = { r, #head + #name, #lines[#lines], "Comment" }
+    end
+  end
+  return lines, line_items, hls
 end
 
 -- "? help · s stack view", from the configured keys; disabled keys are left out.
@@ -162,14 +303,17 @@ local function render()
   end
 
   local bufnr = state.get_files_bufnr()
-  -- Stack mode folds by depth: every frame with frames below it can fold.
+  -- Stack mode folds by depth: every frame with frames below it can fold. The
+  -- folder tree folds the same way, a folder over its contents.
   -- Set before the lines change, which is when Neovim recomputes the folds.
-  fold_levels[bufnr] = mode == "stack" and M.fold_levels(items, #lines) or nil
+  local folds = mode == "stack" or tree_layout()
+  fold_levels[bufnr] = folds and M.fold_levels(items, #lines) or nil
   vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   vim.bo[bufnr].modifiable = false
   -- The files syntax would misread stack rows; they are highlighted by extmarks.
   vim.bo[bufnr].syntax = mode == "stack" and "" or "gh-review-files"
+  local layout = mode == "stack" and "stack" or config.options.files_view
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
   if hint_col then
     vim.api.nvim_buf_set_extmark(bufnr, ns, 1, hint_col, { end_col = #lines[2], hl_group = "Comment" })
@@ -177,7 +321,12 @@ local function render()
   local winid_for_folds = vim.fn.bufwinid(bufnr)
   if winid_for_folds ~= -1 then
     vim.api.nvim_win_call(winid_for_folds, function()
-      if mode == "stack" then
+      if folds then
+        -- Another layout's folds mean nothing here: start over, fully open.
+        if layout ~= last_layout then
+          vim.wo.foldmethod = "manual"
+          vim.cmd("silent! normal! zE")
+        end
         if vim.wo.foldmethod ~= "expr" then
           vim.wo.foldmethod = "expr"
           vim.wo.foldexpr = "v:lua.require'gh_review.files'.foldexpr()"
@@ -201,6 +350,7 @@ local function render()
       end
     end)
   end
+  last_layout = layout
   for _, hl in ipairs(hls) do
     local row, col_start, col_end, group = hl[1] + 1, hl[2], hl[3], hl[4]
     local text = lines[row + 1] or ""
@@ -218,38 +368,68 @@ local function render()
   end
 end
 
-local function toggle_checked_under_cursor()
-  local item = items[vim.fn.line(".")]
-  if not item or item.kind ~= "file" then return end
-  local path = item.path
-
-  -- Optimistically flip locally (M.rerender keeps the cursor in place), then
-  -- sync the "Viewed" state to GitHub.
-  local checked = not state.is_file_checked(path)
-  state.set_file_checked(path, checked)
+-- Mark each of `paths` viewed or not, locally at once, then on GitHub (one
+-- mutation per file) or in the local store. M.rerender keeps the cursor in place.
+local function set_checked(paths, checked)
+  local changed = {}
+  for _, path in ipairs(paths) do
+    if state.is_file_checked(path) ~= checked then changed[#changed + 1] = path end
+  end
+  if #changed == 0 then return end
+  for _, path in ipairs(changed) do state.set_file_checked(path, checked) end
   M.rerender()
 
   if state.is_local_mode() then
-    require("gh_review.local_store").set_viewed(state.get_scope(), path, checked)
+    for _, path in ipairs(changed) do
+      require("gh_review.local_store").set_viewed(state.get_scope(), path, checked)
+    end
     return
   end
 
   local api = require("gh_review.api")
   local graphql = require("gh_review.graphql")
   local mutation = checked and graphql.MUTATION_MARK_FILE_VIEWED or graphql.MUTATION_UNMARK_FILE_VIEWED
-  local vars = { pullRequestId = state.get_pr_id(), path = path }
-  api.graphql(mutation, vars, function(result, err)
-    local data = ((result or {}).data) or {}
-    local ok = not err and (data.markFileAsViewed or data.unmarkFileAsViewed)
-    if not ok then
-      -- Revert, unless the user re-toggled this file while the request was in
-      -- flight (which would make this a stale response we'd be clobbering).
-      if state.is_file_checked(path) == checked then
-        state.set_file_checked(path, not checked)
-        M.rerender()
+  for _, path in ipairs(changed) do
+    local vars = { pullRequestId = state.get_pr_id(), path = path }
+    api.graphql(mutation, vars, function(result, err)
+      local data = ((result or {}).data) or {}
+      local ok = not err and (data.markFileAsViewed or data.unmarkFileAsViewed)
+      if not ok then
+        -- Revert, unless the user re-toggled this file while the request was in
+        -- flight (which would make this a stale response we'd be clobbering).
+        if state.is_file_checked(path) == checked then
+          state.set_file_checked(path, not checked)
+          M.rerender()
+        end
       end
+    end)
+  end
+end
+
+-- Every changed file at or under the folder `dir`.
+local function paths_under(dir)
+  local paths = {}
+  for _, f in ipairs(state.get_changed_files()) do
+    local path = state.get(f, "path", "")
+    if path:sub(1, #dir + 1) == dir .. "/" then paths[#paths + 1] = path end
+  end
+  return paths
+end
+
+local function toggle_checked_under_cursor()
+  local item = items[vim.fn.line(".")]
+  if not item then return end
+  if item.kind == "file" then
+    set_checked({ item.path }, not state.is_file_checked(item.path))
+  elseif item.kind == "dir" then
+    -- All viewed already: unmark them all. Otherwise mark the rest.
+    local paths = paths_under(item.path)
+    local all = #paths > 0
+    for _, path in ipairs(paths) do
+      if not state.is_file_checked(path) then all = false end
     end
-  end)
+    set_checked(paths, not all)
+  end
 end
 
 local function open_file_under_cursor()
@@ -257,6 +437,10 @@ local function open_file_under_cursor()
   if not item then return end
   if item.kind == "file" then
     require("gh_review.diff").open(item.path)
+    return
+  end
+  if item.kind == "dir" then
+    vim.cmd("silent! normal! za")
     return
   end
   -- A stack row: a "see above" reference jumps to the expanded frame.
@@ -305,6 +489,26 @@ function M.toggle_stack()
       if items[lnum] then first = lnum break end
     end
     pcall(vim.api.nvim_win_set_cursor, winid, { first, 0 })
+  end
+end
+
+-- Switch the file list between the flat list and the folder tree, for this
+-- session. The cursor goes to the same file (or folder) when it is still shown.
+function M.toggle_tree()
+  local options = config.options
+  local bufnr = state.get_files_bufnr()
+  local winid = bufnr ~= -1 and vim.fn.bufwinid(bufnr) or -1
+  local item = winid ~= -1 and items[vim.api.nvim_win_get_cursor(winid)[1]] or nil
+  options.files_view = options.files_view == "tree" and "flat" or "tree"
+  -- The stack view has no tree; the choice shows when the list comes back.
+  if mode ~= "files" then return end
+  M.rerender()
+  if winid == -1 or not item then return end
+  for lnum, it in pairs(items) do
+    if it.kind == item.kind and it.path == item.path then
+      pcall(vim.api.nvim_win_set_cursor, winid, { lnum, 0 })
+      return
+    end
   end
 end
 
@@ -395,7 +599,8 @@ local ACTIONS = {
   scope_uncommitted = { { "n", function() require("gh_review").set_scope("uncommitted") end, "Scope: uncommitted" } },
   scope_turn        = { { "n", function() require("gh_review").set_scope("turn") end, "Scope: last turn" } },
   toggle_stack      = { { "n", function() M.toggle_stack() end, "Toggle stack view" } },
-  toggle_fold       = { { "n", function() vim.cmd("silent! normal! za") end, "Fold or unfold a frame and what it calls" } },
+  toggle_fold       = { { "n", function() vim.cmd("silent! normal! za") end, "Fold or unfold a frame or folder" } },
+  toggle_tree       = { { "n", function() M.toggle_tree() end, "Toggle flat list / folder tree" } },
   toggle_position   = { { "n", function() M.toggle_position() end, "Move list left/bottom" } },
   help              = { { "n", function() require("gh_review.help").open() end, "Show keys and commands" } },
   toggle_view       = { { "n", function() require("gh_review.diff").toggle_view() end, "Toggle side-by-side / unified" } },

@@ -67,6 +67,7 @@ require("gh_review").setup({
   diff_inline = "word",      -- mark changed words in a line: "word", "char", or "off"
   diff_follow = true,        -- a jump (gd, gF, :e) to another changed file opens it as a diff
   files_position = "bottom", -- or "left"
+  files_view = "flat",       -- or "tree": changed files grouped in folders you can fold
   files_size = { bottom = 12, left = 50 },
   keymaps = {
     diff = {
@@ -107,6 +108,7 @@ require("gh_review").setup({
       toggle_stack      = "s",
       toggle_fold       = "<Tab>",
       toggle_position   = "P",
+      toggle_tree       = "T",
       help              = "?",
       toggle_view       = "gu",
     },
@@ -289,14 +291,15 @@ gF                      Jump to the file with LSP (checkout only)
 | Key       | Action                                     |
 |-----------|--------------------------------------------|
 | `<CR>`    | Open the file’s side-by-side diff          |
-| `<Space>` | Toggle the file’s reviewed state           |
+| `<Space>` | Toggle the file’s reviewed state (on a folder: every file under it) |
 | `R`       | Refresh review threads from GitHub (local scopes: re-read git and comments) |
 | `gf`      | Close the files list                       |
 | `q`       | Close the files list                       |
 | `S`       | Send comments to a coding agent            |
 | `p` `b` `u` `t` | Scope: PR / branch / uncommitted / last turn |
 | `s`       | Toggle the stack view                      |
-| `<Tab>`   | Fold or unfold a frame and what it calls (stack view; `zM`/`zr` work by level) |
+| `<Tab>`   | Fold or unfold a frame and what it calls (stack view), or a folder (tree; `zM`/`zr` work by level) |
+| `T`       | Toggle the flat list / folder tree (`files_view`) |
 | `P`       | Move the list between the bottom and the left |
 | `?`       | Show every key (files list, diff, comment buffer) and command |
 | `gu`      | Switch the diff between side-by-side and unified |

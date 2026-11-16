@@ -31,6 +31,8 @@ M.defaults = {
   diff_inline = "word",
   -- Where the files list sits, and its height (bottom) or width (left).
   files_position = "bottom",
+  -- How the changed files are listed: "flat", or "tree" (folders you can fold).
+  files_view = "flat",
   files_size = { bottom = 12, left = 50 },
   keymaps = {
     -- Scope and send keys are off in the diff by default: the head pane is the
@@ -73,6 +75,7 @@ M.defaults = {
       toggle_stack      = "s",
       toggle_fold       = "<Tab>",
       toggle_position   = "P",
+      toggle_tree       = "T",
       help              = "?",
       toggle_view       = "gu",
     },
@@ -206,6 +209,10 @@ local function validate_files(opts)
     warn('files_position must be "bottom" or "left"')
     ok = false
   end
+  if opts.files_view ~= nil and opts.files_view ~= "flat" and opts.files_view ~= "tree" then
+    warn('files_view must be "flat" or "tree"')
+    ok = false
+  end
   if opts.files_size ~= nil then
     if type(opts.files_size) ~= "table" then
       warn("files_size must be a table")
@@ -239,9 +246,9 @@ function M.setup(opts)
   local ok = true
   for key in pairs(opts) do
     if key ~= "fold" and key ~= "keymaps" and key ~= "turn" and key ~= "stack"
-      and key ~= "files_position" and key ~= "files_size" and key ~= "diff_view" and key ~= "pr_drafts"
+      and key ~= "files_position" and key ~= "files_view" and key ~= "files_size" and key ~= "diff_view" and key ~= "pr_drafts"
       and key ~= "diff_inline" and key ~= "diff_follow" then
-      warn(string.format("unknown option %q (expected fold, keymaps, turn, stack, diff_view, pr_drafts, files_position, or files_size)", key))
+      warn(string.format("unknown option %q (expected fold, keymaps, turn, stack, diff_view, pr_drafts, files_position, files_view, or files_size)", key))
       ok = false
     end
   end
